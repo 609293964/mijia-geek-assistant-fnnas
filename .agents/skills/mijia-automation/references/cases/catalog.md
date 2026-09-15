@@ -41,6 +41,16 @@
 | 物理寄存器与持久状态 | `SRC-DY-BUG-REGISTER` | `PAT-STATE-01`, `PAT-ADAPT-01` | video | “断电记忆”属于具体设备能力，必须逐设备实测，不能泛化到 register/变量 |
 | 启动查询与停电恢复 | `SRC-DY-BUG-PRELOAD` | `PAT-SEM-01`, `PAT-STATE-01`, `PAT-LOOP-01` | video | preload/onLoad 与设备上线时序、陈旧缓存和人工恢复竞争 |
 
+## 用户提供视频的脱敏案例
+
+这些案例来自用户上传的视频样本。由于当前没有稳定公开 URL，证据状态记为 `user-provided`；只保存架构摘要，不保存原视频或完整转写。
+
+| 案例组 | 主要来源 | 关联模式 | 当前状态 | 需要继续验证的边界 |
+|---|---|---|---|---|
+| 多意图优先级仲裁 | `SRC-UPLOAD-ARB-001` | `PAT-STATE-01`, `PAT-AGG-01`, `PAT-SYNC-01` | user-provided | 每个意图的失效复位、开/关平票、UNKNOWN、同时更新的中间态、重复触发、重启恢复；未验证前不新增稳定 PAT ID |
+| 自动化触发后的手机执行通知 | `SRC-UPLOAD-NOTIFY-001` | `PAT-ADAPT-01`, `PAT-STATE-01`, `PAT-TIME-01` | user-provided | “首尾通知”只能证明流程开始/到达末尾；不能等同设备真实成功；App 通知桥接与本地/云端时延需验证 |
+| 执行中变量 + 超时完成检测 | `SRC-UPLOAD-NOTIFY-001` | `PAT-STATE-01`, `PAT-TIME-01`, `PAT-LOOP-01` | user-provided | 布尔完成标记在流程重入时可能串扰；固定 3 秒不能泛化；需区分流程完成、设备状态确认和超时 |
+
 来源 URL 与提炼状态见 `../sources/catalog.md`。
 
 完整案例证据由维护者保存在私有案例库。公开模式只接收经过脱敏和验证的结论。
