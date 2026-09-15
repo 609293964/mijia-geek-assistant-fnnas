@@ -46,6 +46,14 @@ video
 | 虚拟事件协同 | runtime-verified | 已确认网关规则可产生并消费同名字符串事件；App 创建、通知往返及重复触发仍待验证 |
 | 启动恢复动作 | video, conflicted | 用无害灯记录规则启用、设备上线、延迟动作和人工操作竞争的时间线 |
 | 节律渐变 | video, conflicted | 三分钟短区间验证初始化、步长、终点夹紧、中途关灯、重启和停止 |
+| register 上升沿与重复置位 | video | 用临时计数变量记录 false→true、true→true、true→false 三种序列的 output 次数；关联 `SRC-BILI-BUG-STATE`、`SRC-BILI-EASY-LOGIC` |
+| 状态谓词真值边沿与原始值更新 | video | 选一个多值属性，分别测试“原始值变化但谓词仍 true”“false→true”“true→false”，记录实际事件次数；关联 `SRC-BILI-EASY-EDGE` |
+| 人体事件模拟持续有人 | video | 用无害反馈验证重复有人、无人复位、快速进出、网关重启四条路径；关联 `SRC-BILI-BUG-OCC` |
+| 手动优先自动灯控 | video | 覆盖实体按键、App、语音、自动化四种开灯来源，验证自动关灯是否只作用于自动开启来源；关联 `SRC-BILI-BUG-MANUAL` |
+| delay 重入与打断 | video | 在同一 delay 未结束前再次触发，记录旧计时是否继续、重置、并行或被打断；再加入取消路径；关联 `SRC-BILI-BUG-DELAY` |
+| 计数节点 zero 与重启 | video | 分别验证 onlyNTimes/counter 的第 N 次输出、zero 立即复位、并发输入以及规则重启后的计数状态；关联 `SRC-BILI-BUG-COUNT` |
+| preload / 启动时查询一次 | video | 停电恢复后分别测试 preload 开/关、设备先上线/后上线、状态未变化三种时序，记录中枢得到首个有效状态的时间；关联 `SRC-DY-BUG-PRELOAD` |
+| 物理寄存器断电记忆 | video | 对每个候选设备属性单独验证：可写、可读、不影响主功能、断电后值保留；不得把一个型号结果泛化到其他设备；关联 `SRC-DY-BUG-REGISTER` |
 
 ## 已验证命题
 
@@ -62,3 +70,7 @@ video
 | counter 可在第 3 轮停止 loop | runtime-verified | 循环变量最终为 `3` | 重启、并发启动 |
 | modeSwitch 空输出仍占一个轮次 | runtime-verified | A、B 各执行一次，第三空档终止链 | 重启后游标 |
 | 网关虚拟事件可由规则产生并消费 | runtime-verified | 同名字符串事件被消费一次 | App 通知、重复触发、跨规则重启 |
+
+## 公开来源
+
+来源 URL、作者与主题统一维护在 `../sources/catalog.md`。实验记录只引用稳定的 `SRC-*` ID，避免把平台页面文本复制进仓库。
