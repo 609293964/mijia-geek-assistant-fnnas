@@ -3,7 +3,7 @@ name: mijia-automation
 description: 米家自动化极客版规则与变量管理指南。当用户想要创建智能场景、设备联动、定时任务、条件触发，或创建、读取、修改、删除自动化变量时使用此 Skill。
 metadata:
   author: mijia-geek-ai
-  version: "3.8"
+  version: "3.9"
 ---
 
 # 米家自动化规则创建
@@ -38,6 +38,15 @@ video → ui-sample → graph-diff → local-tested → gateway-roundtrip → ru
 视频案例只是设计线索。未达到 `runtime-verified` 的行为不得写成强制校验规则；达到 `reusable-pattern` 还必须满足脱敏、跨场景适用和边界明确，才可作为通用模式推荐。证据可从真实规则、源码或网关样本开始，不要求机械经过每一级。
 
 完整节点字段按需读取 [米家自动化规则完全参考](references/mijia-complete-reference.md)，不要把全部节点模板和全部案例同时加载。
+
+## 设备引用查询（Web Agent）
+
+用户要求查询设备被哪些规则使用、或评估更换设备的影响时，使用 `find_device_usage`，参数为 `dids` 或 `query`（名称、型号、房间或设备 ID 模糊匹配）；两者同时给出时取并集。详细返回约定见 [设备引用扫描](references/device-usage.md)。
+
+- 只读查询，输出设备在规则中的触发、读取、控制角色，不更改设备或规则。
+- 先检查 `complete`；读取失败、畸形规则、超时或取消后的剩余规则均属于未确认范围，不能据此报告“没有引用”。
+- `orphans` 仅表示此次设备列表中不存在的直接引用，不是删除许可；规则引用也不是实际运行证据。
+- 这是上游 `mijia_find_device_usage` 的网页适配；不需要安装 MCP。能力与边界由本地 mock 测试验证，尚未在 fnOS 实机验证。
 
 ## 变量生命周期能力
 
@@ -120,8 +129,10 @@ video → ui-sample → graph-diff → local-tested → gateway-roundtrip → ru
 8. **props 必须存在**：`"props": {}` 不能省略
 9. **cfg.name**：值为节点类型名（如 `"deviceInput"`）
 11. **状态持续首选 statusLast**：凡是“状态维持/有人超过N秒/开门超过N秒”等持续状态需求，网关层必须首选 `statusLast` 节点（状态输入持续满 timeout 毫秒触发，中途状态反转自动复位重置）。严禁使用 `deviceInput -> delay -> deviceGet` 伪持续轮询
-12. **硬件原生时长与量程对齐**：设备 MIOT Spec 包含原生持续时长属性（如 `no_motion_duration`）且用户需求符合量程（如分钟级）时，优先采用原生属性；若用户需求为秒级（如 5s/10s/30s）而设备仅支持分钟级，必须采用 `statusLast` 并主动向用户说明
+12. **硬件原生时长与量程对齐**：设备 MIOT Spec 包含可通知的原生持续时长属性（如 `no_motion_duration`）且用户需求符合量程（如分钟级）时，必须优先采用原生属性；原生属性能精确表达时，禁止再增加同一意图的 `statusLast`。若用户需求为秒级（如 5s/10s/30s）而设备仅支持分钟级，才采用 `statusLast` 并主动向用户说明
 13. **delay 与 statusLast 语义隔离**：`delay` 仅用于动作发生后的无条件延时等待（如开灯后延时 5 秒关灯），不可用于状态持续判定
+14. **端口与信号语义必须匹配**：`deviceOutput` 只能声明 `inputs: {"trigger": null}`；事件源之间的“任一触发”必须使用 `signalOr`，`logicOr`/`logicAnd`/`logicNot` 只接收状态条件，不能把 `deviceInput.output` 直接接到逻辑状态节点；`statusLast.input` 必须有真实状态来源
+15. **statusLast 卡片字段必须完整**：除 `props.timeout`（运行时毫秒）外，必须填写 `cfg.unit` 与 `cfg.value`，且换算后必须等于 `props.timeout`；创建器可从 timeout 自动补齐，但不能覆盖用户明确填写的不一致值
 
 ## inputs/outputs 工作机制
 
@@ -171,6 +182,8 @@ video → ui-sample → graph-diff → local-tested → gateway-roundtrip → ru
 6. **修复错误**：任一校验器报告 error 时修复并重新校验，直到全部通过
 7. **调用 create_graph 或 update_graph**：两项校验通过后调用创建/更新工具；工具内部仍会再次校验
 8. **确认结果**：回读规则并确认启用状态、变量作用域和关键节点
+
+写操作必须串行：候选图 → 能力校验 → 结构校验 → 一次写入 → 回读确认。若返回“写入结果未确认”，先回读并比较，不得自动并行或重复写入。
 
 设计表使用固定格式：
 
@@ -319,9 +332,9 @@ MCP 模式下**创建**超过 10 个节点的复杂规则时，不要调用两�
 
 ### statusLast - 状态持续一段时间（状态维持）
 ```json
-{"id":"$ID","type":"statusLast","cfg":{"name":"statusLast","version":1},"props":{"timeout":$MS},"inputs":{"input":null},"outputs":{"output":["$NEXT.trigger"]}}
+{"id":"$ID","type":"statusLast","cfg":{"name":"statusLast","version":1,"unit":"s","value":$SECONDS},"props":{"timeout":$MS},"inputs":{"input":null},"outputs":{"output":["$NEXT.trigger"]}}
 ```
-⚠️ `inputs` 必须是 `input`，接收状态输入（如设备属性判定、`condition` 等）。`props.timeout` 为持续毫秒数（如 5000 表示 5 秒）。当输入状态持续为 true 达到设定毫秒时发出事件触发；**若中途状态反转（变为 false），计时自动重置复位**。这是网关层处理秒级持续状态（有人持续、开门持续等）的标准首选节点。
+⚠️ `inputs` 必须是 `input`，接收状态输入（如设备属性判定、`condition` 等）。`props.timeout` 为持续毫秒数（如 5000 表示 5 秒）；`cfg.unit/cfg.value` 是 UI 卡片显示字段，必须满足 `cfg.value × unit = props.timeout`。当输入状态持续为 true 达到设定毫秒时发出事件触发；**若中途状态反转（变为 false），计时自动重置复位**。这是网关层处理秒级持续状态（有人持续、开门持续等）的标准首选节点。
 
 ### eventSequence - 事件先后发生
 ```json

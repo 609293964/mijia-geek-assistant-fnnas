@@ -99,6 +99,8 @@ export interface DeviceInfo {
         range?: MiotValueRange;
         list?: MiotValueListItem[];
     }>;
+    /** MIOT Spec 是否已成功完整读取；unknown/ unavailable 时禁止猜测设备能力。 */
+    specStatus?: 'loaded' | 'unavailable';
     specError?: string;
 }
 

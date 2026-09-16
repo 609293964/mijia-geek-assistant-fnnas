@@ -7,6 +7,7 @@ import {SendOutlined, LoadingOutlined, ToolOutlined, RobotOutlined, QuestionCirc
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {extractSseData} from '@/lib/sse';
+import {chatCompletionError, chatFailure} from '@/lib/chat-diagnostics';
 
 const {Text} = Typography;
 const {TextArea} = Input;
@@ -86,12 +87,6 @@ async function getChatRequestError(response: Response): Promise<string> {
     if (contentType.includes('application/json')) {
         const body = await response.json().catch(() => null) as {error?: unknown} | null;
         if (typeof body?.error === 'string' && body.error.trim()) detail = body.error.trim();
-    } else {
-        detail = (await response.text().catch(() => ''))
-            .replace(/<[^>]*>/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 160);
     }
 
     if (detail) return detail;
@@ -335,6 +330,10 @@ export default function Chat({
         const currentToolCalls: DisplayToolCall[] = [];
         let finalContent = '';
         let graphChanged = false;
+        let requestId = '';
+        let completed = false;
+        let waiting = false;
+        let receivedDone = false;
         setStreamThinking('');
         setStreamToolCalls([]);
         setStreamFinalContent('');
@@ -356,8 +355,12 @@ export default function Chat({
                 signal: abortController.signal,
             });
 
+            requestId = response.headers.get('X-Request-ID') || '';
             if (!response.ok) {
                 throw new Error(await getChatRequestError(response));
+            }
+            if (!response.headers.get('content-type')?.includes('text/event-stream')) {
+                throw new Error('[PROTOCOL] 聊天接口返回了非流式响应，请检查服务地址和反向代理配置。');
             }
 
             const reader = response.body?.getReader();
@@ -396,10 +399,13 @@ export default function Chat({
                         break;
                     }
                     case 'complete':
+                        completed = true;
                         finalContent = output.message || output.content || '';
                         setStreamFinalContent(finalContent);
                         break;
                     case 'waiting_input': {
+                        waiting = true;
+                        finalContent = output.question || currentThinking || '等待你的确认。';
                         const opts = Array.isArray(output.options) ? output.options : [];
                         if (opts.length > 0) setWaitingInput({question: output.question || '请选择', options: opts});
                         break;
@@ -417,15 +423,10 @@ export default function Chat({
                             currentToolCalls[pendingIndex].success = false;
                             currentToolCalls[pendingIndex].result = {success: false, error: streamError};
                             setStreamToolCalls([...currentToolCalls]);
-                        } else if (!finalContent) {
-                            finalContent = `执行失败：${streamError}`;
-                            setStreamFinalContent(finalContent);
                         }
-                        message.error(
-                            imageAttachments.length > 0
-                                ? `图片识别失败，请确认当前模型支持视觉输入。 ${streamError}`
-                                : streamError
-                        );
+                        finalContent = `${currentThinking}\n\n执行失败：${streamError}${requestId ? `\n诊断编号：${requestId}` : ''}`;
+                        setStreamFinalContent(finalContent);
+                        message.error(streamError);
                         break;
                     }
                 }
@@ -433,7 +434,8 @@ export default function Chat({
 
             const processSseData = (dataItems: string[]) => {
                 for (const data of dataItems) {
-                    if (data === '[DONE]' || !data) continue;
+                    if (data === '[DONE]') { receivedDone = true; continue; }
+                    if (!data) continue;
                     handleOutput(JSON.parse(data) as AgentOutput);
                 }
             };
@@ -457,6 +459,10 @@ export default function Chat({
             processSseData(finalEvents.data);
 
             if (abortController.signal.aborted) return;
+            if (!streamError && !waiting) {
+                const failure = chatCompletionError(completed && receivedDone, finalContent);
+                if (failure) handleOutput({type: 'error', error: failure});
+            }
 
             if (!currentSessionId) {
                 const sessionsResponse = await fetch('/api/sessions');
@@ -493,12 +499,18 @@ export default function Chat({
                 onGraphChanged?.();
             }
 
-        } catch (error: any) {
-            if (error.name === 'AbortError') return;
+        } catch (error: unknown) {
+            if (abortController.signal.aborted) return;
             setInput(messageText);
             setPendingImages(imageAttachments);
-            setMessages(prev => prev.filter(m => m.id !== userMessage.id));
-            message.error('发送失败: ' + error.message);
+            const detail = error instanceof Error && !/fetch|network|terminated/i.test(error.message)
+                ? error.message : chatFailure(error);
+            const failure = `发送失败：${detail}${requestId ? `\n诊断编号：${requestId}` : '\n未取得服务端诊断编号。'}\n如已有工具执行，请先核对结果再重试。`;
+            setMessages(prev => [...prev, {id: generateMessageId(), role: 'assistant', content: `${currentThinking}\n\n${failure}`, process: {thinking: currentThinking, toolCalls: currentToolCalls}}]);
+            setStreamThinking('');
+            setStreamToolCalls([]);
+            setStreamFinalContent('');
+            message.error(failure);
         } finally {
             abortControllerRef.current = null;
             setIsLoading(false);

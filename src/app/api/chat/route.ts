@@ -6,7 +6,8 @@
 import {NextRequest} from 'next/server';
 import {getGateway, isGatewayConnected} from '@/server/gateway/shared';
 import {Agent} from '@/server/agent/agent';
-import {formatAgentError} from '@/server/agent/diagnostics';
+import {chatFailure} from '@/lib/chat-diagnostics';
+import {randomUUID} from 'node:crypto';
 import {getModelConfigFromEnv} from '@/server/ai/model';
 import {getSessionStore} from '@/server/session/store';
 import {hasValidImageSignature} from '@/server/ai/chat-images';
@@ -30,6 +31,11 @@ function badRequest(error: string) {
  * POST /api/chat
  */
 export async function POST(request: NextRequest) {
+    const requestId = randomUUID();
+    const startedAt = Date.now();
+    let stage = 'input';
+    const log = (event: string, error?: string) => console.info('[ChatDiagnostic]', JSON.stringify({requestId, stage, event, elapsedMs: Date.now() - startedAt, error}));
+    log('received');
     try {
         const contentType = request.headers.get('content-type') || '';
         let message = '';
@@ -76,6 +82,7 @@ export async function POST(request: NextRequest) {
 
         // 使用已建立的连接
         const gateway = getGateway()!;
+        stage = 'configuration';
         const config = getModelConfigFromEnv();
         const agent = new Agent(gateway, config);
 
@@ -90,19 +97,22 @@ export async function POST(request: NextRequest) {
         }
 
         const encoder = new TextEncoder();
+        stage = 'agent';
         const stream = new ReadableStream({
             async start(controller) {
                 try {
                     for await (const output of agent.run(message, images)) {
-                        const data = JSON.stringify(output);
+                        if (output.type === 'error') log('error', output.error.startsWith('[') ? output.error : chatFailure(output.error));
+                        if (output.type === 'complete' || output.type === 'waiting_input') log(output.type);
+                        const data = JSON.stringify({...output, requestId});
                         controller.enqueue(encoder.encode(`data: ${data}\n\n`));
                     }
                     controller.enqueue(encoder.encode('data: [DONE]\n\n'));
                     controller.close();
                 } catch (error) {
-                    const errorMessage = formatAgentError(error);
-                    console.error('[ChatStreamError]', JSON.stringify({error: errorMessage}));
-                    const errorOutput = {type: 'error', error: errorMessage};
+                    const errorMessage = chatFailure(error);
+                    log('error', errorMessage);
+                    const errorOutput = {type: 'error', error: errorMessage, requestId};
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorOutput)}\n\n`));
                     controller.close();
                 }
@@ -112,6 +122,7 @@ export async function POST(request: NextRequest) {
         return new Response(stream, {
             headers: {
                 'Content-Type': 'text/event-stream',
+                'X-Request-ID': requestId,
                 'Cache-Control': 'no-cache',
                 'Pragma': 'no-cache',
                 'Connection': 'keep-alive',
@@ -119,10 +130,11 @@ export async function POST(request: NextRequest) {
         });
 
     } catch (error) {
-        console.error('Chat API error:', error);
+        const errorMessage = chatFailure(error);
+        log('error', errorMessage);
         return new Response(
-            JSON.stringify({error: String(error)}),
-            {status: 500, headers: {'Content-Type': 'application/json', 'Cache-Control': 'no-store'}}
+            JSON.stringify({error: errorMessage, requestId}),
+            {status: 500, headers: {'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Request-ID': requestId}}
         );
     }
 }

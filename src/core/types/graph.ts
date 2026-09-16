@@ -34,6 +34,8 @@ export interface Graph {
     id: string;
     nodes: GraphNode[];
     cfg: GraphConfig;
+    durationRequirement?: DurationRequirement;
+    durationRequirements?: DurationRequirement[];
 }
 
 /** 规则摘要 */
@@ -57,9 +59,25 @@ export interface CreateGraphInput {
         value: number | string;
         name?: string;
     }>;
+    durationRequirement?: DurationRequirement;
+    durationRequirements?: DurationRequirement[];
 }
 
-export type UpdateGraphInput = Partial<Pick<CreateGraphInput, 'name' | 'nodes' | 'enable'>>;
+export interface DurationRequirement {
+    durationMs: number;
+    intent: 'state_hold' | 'action_delay';
+    hardRequirement?: boolean;
+    targetDids?: string[];
+    /** 绑定到具体的持续/延时节点，避免一条全局时长误覆盖多个分支。 */
+    nodeId?: string;
+    /** 可选的状态来源节点，用于校验关键路径没有接错分支。 */
+    sourceNodeId?: string;
+    sourceDid?: string;
+    sourceOperator?: string;
+    sourceValues?: Array<string | number | boolean>;
+}
+
+export type UpdateGraphInput = Partial<Pick<CreateGraphInput, 'name' | 'nodes' | 'enable' | 'durationRequirement' | 'durationRequirements'>>;
 
 /** 校验错误 */
 export interface ValidationError {
@@ -67,4 +85,41 @@ export interface ValidationError {
     type: string;
     level: 'error' | 'warn';
     message: string;
+}
+
+/** 设备在某个节点上的直接引用，角色沿用上游的 trigger/read/write 分类。 */
+export interface DeviceUsageNode {
+    nodeId: string;
+    nodeType: string;
+    role: 'trigger' | 'read' | 'write';
+    target: string;
+}
+
+export interface DeviceUsageGraph {
+    graphId: string;
+    name: string;
+    /** 元数据未给出启用状态时保持未知，不能误报为禁用。 */
+    enable: boolean | null;
+    nodes: DeviceUsageNode[];
+}
+
+export interface DeviceUsage {
+    did: string;
+    name: string;
+    /** 是否存在于此次设备列表，不代表设备在线或已确认删除。 */
+    found: boolean;
+    nodeCount: number;
+    graphs: DeviceUsageGraph[];
+}
+
+export interface DeviceUsageReport {
+    devices: DeviceUsage[];
+    orphans: Array<{ did: string; graphs: string[] }>;
+    totalGraphs: number;
+    /** 已尝试读取的规则数，包含 unreadableGraphs。 */
+    scannedGraphs: number;
+    unreadableGraphs: string[];
+    /** 到达总时限或取消后尚未读取的规则。 */
+    skippedGraphs: string[];
+    complete: boolean;
 }

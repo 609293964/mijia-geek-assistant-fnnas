@@ -6,6 +6,7 @@
 |---|---|
 | 事件/状态/查询的区别、condition 双输入、signalOr 与 logic、register、状态边沿与 UNKNOWN | [patterns/event-state-semantics.md](patterns/event-state-semantics.md) |
 | 节点字段、端口、完整 JSON 结构 | [mijia-complete-reference.md](mijia-complete-reference.md) |
+| 查询设备被哪些规则使用、排查残留引用与扫描不完整 | [device-usage.md](device-usage.md) |
 | 变量保存状态、局部/全局作用域、查询新鲜度、触发与状态时序、时间窗寄存器 | [patterns/state-and-scope.md](patterns/state-and-scope.md) |
 | 运算、取整、小数、量程转换 | [patterns/numeric-transforms.md](patterns/numeric-transforms.md) |
 | 多传感器、最值、至少满足 k 个、求和兜底、否则与状态组合 | [patterns/aggregation-and-thresholds.md](patterns/aggregation-and-thresholds.md) |

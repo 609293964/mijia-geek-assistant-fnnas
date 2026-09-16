@@ -13,6 +13,56 @@ assert.equal(invalid.valid, false);
 assert.match(invalid.errors[0].message, /枚举字段/);
 const valid = validateGraphCapabilities([{ ...base, props: { did: 'sensor', siid: 2, piid: 2, dtype: 'int', operator: 'include', v1: [2] } }], new Map([['sensor', device]]));
 assert.equal(valid.valid, true);
+const secondsRequest = validateGraphCapabilities([
+  { id: 'hold', type: 'statusLast', cfg: {}, props: { timeout: 30000 }, inputs: { input: null }, outputs: { output: [] } } as any,
+], new Map([['sensor', device]]), { durationMs: 30000, intent: 'state_hold' });
+assert.equal(secondsRequest.valid, true);
+const wrongSecondsGraph = validateGraphCapabilities([
+  { ...base, props: { did: 'sensor', siid: 2, piid: 2, dtype: 'int', operator: 'include', v1: [30] } },
+], new Map([['sensor', device]]), { durationMs: 30000, intent: 'state_hold' });
+assert.equal(wrongSecondsGraph.valid, false);
+assert.ok(wrongSecondsGraph.errors.some((item) => item.type === 'duration_not_representable'));
+const delayForHold = validateGraphCapabilities([
+  { id: 'delay', type: 'delay', cfg: {}, props: { timeout: 30000 }, inputs: { input: null }, outputs: { output: [] } } as any,
+], new Map([['sensor', device]]), { durationMs: 30000, intent: 'state_hold' });
+assert.ok(delayForHold.errors.some((item) => item.type === 'delay_used_for_state_hold'));
+
+const sourceNode = { id: 'hasSomeone', type: 'deviceInput', cfg: {}, props: { did: 'sensor', siid: 2, piid: 2, dtype: 'int', operator: 'include', v1: [2] }, inputs: {}, outputs: { output: ['hold30.input'] } };
+const hold30 = { id: 'hold30', type: 'statusLast', cfg: {}, props: { timeout: 30000 }, inputs: { input: null }, outputs: { output: [] } };
+const hold180 = { id: 'hold180', type: 'statusLast', cfg: {}, props: { timeout: 180000 }, inputs: { input: null }, outputs: { output: [] } };
+const boundDuration = validateGraphCapabilities(
+  [sourceNode, hold30, hold180] as any,
+  new Map([['sensor', device]]),
+  [
+    { nodeId: 'hold30', sourceNodeId: 'hasSomeone', sourceDid: 'sensor', durationMs: 30000, intent: 'state_hold' },
+    { nodeId: 'hold180', durationMs: 180000, intent: 'state_hold' },
+  ],
+);
+assert.equal(boundDuration.valid, true);
+const mismatchedDuration = validateGraphCapabilities(
+  [sourceNode, hold30] as any,
+  new Map([['sensor', device]]),
+  { nodeId: 'hold30', durationMs: 120000, intent: 'state_hold' },
+);
+assert.ok(mismatchedDuration.errors.some((item) => item.type === 'duration_node_mismatch'));
+const nativeExactButGatewayTimed = validateGraphCapabilities(
+  [
+    { id: 'occupancy', type: 'deviceInput', cfg: {}, props: { did: 'sensor', siid: 2, piid: 2, dtype: 'int', operator: 'include', v1: [2] }, inputs: {}, outputs: { output: ['holdNative.input'] } },
+    { id: 'holdNative', type: 'statusLast', cfg: {}, props: { timeout: 120000 }, inputs: { input: null }, outputs: { output: [] } },
+  ] as any,
+  new Map([['sensor', device]]),
+  { nodeId: 'holdNative', sourceNodeId: 'occupancy', durationMs: 120000, intent: 'state_hold' },
+);
+assert.ok(nativeExactButGatewayTimed.errors.some((item) => item.type === 'native_duration_required'));
+const implicitNativeButGatewayTimed = validateGraphCapabilities(
+  [
+    { id: 'occupancyImplicit', type: 'deviceInput', cfg: {}, props: { did: 'sensor', siid: 2, piid: 1, dtype: 'int', operator: 'include', v1: [1] }, inputs: {}, outputs: { output: ['holdImplicit.input'] } },
+    { id: 'holdImplicit', type: 'statusLast', cfg: {}, props: { timeout: 120000 }, inputs: { input: null }, outputs: { output: [] } },
+  ] as any,
+  new Map([['sensor', device]]),
+);
+assert.ok(implicitNativeButGatewayTimed.errors.some((item) => item.type === 'native_duration_required'));
+
 const withoutCfg = validateGraphCapabilities([{ ...base, cfg: undefined, props: { did: 'sensor', siid: 2, piid: 2, dtype: 'int', operator: 'include', v1: [2] } } as any], new Map([['sensor', device]]));
 assert.equal(withoutCfg.valid, true);
 assert.equal(validateGraphCapabilities([{ ...base, cfg: undefined, props: undefined } as any], new Map([['sensor', device]])).errors[0].type, 'missing_props');

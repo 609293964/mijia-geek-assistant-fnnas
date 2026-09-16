@@ -12,6 +12,8 @@ import {
     createVariable,
     deleteGraph,
     deleteVariable,
+    findDeviceUsage,
+    findDeviceUsageInputSchema,
     getDevice,
     getDevices,
     getGraph,
@@ -119,13 +121,19 @@ export function createCoreTools(gateway: GatewayClient) {
         }),
 
         get_device: defineTool({
-            description: '获取设备详情及 MIOT Spec 能力',
+            description: '获取设备详情、完整 URN 及 MIOT Spec 能力。规则节点 cfg.urn 应使用返回的 urn，不要从型号推导或猜测版本号。',
             parameters: z.object({
                 dids: z.array(z.string()).describe('设备ID数组'),
             }),
             execute: async ({dids}) => {
                 return getDevice(gateway, dids);
             },
+        }),
+
+        find_device_usage: defineTool({
+            description: '只读扫描自动化规则，查询设备被哪些规则和节点引用，区分触发、读取、控制，并报告设备列表中不存在的残留引用。dids 与 query 至少提供一项，同时提供时取并集。单次扫描总时限 30 秒；complete=false 时必须提示扫描不完整，不能断言没有引用。enable=null 表示启用状态未知。结果不证明规则实际执行过，也不授权修改规则。',
+            parameters: findDeviceUsageInputSchema,
+            execute: async (input, {abortSignal}) => findDeviceUsage(gateway, input, {signal: abortSignal}),
         }),
 
         call_gateway_api: defineTool({
@@ -167,10 +175,32 @@ export function createCoreTools(gateway: GatewayClient) {
                     z.object({id: z.string().regex(/^[a-zA-Z0-9]+$/), type: z.literal('number'), value: z.number(), name: z.string().trim().min(1).optional()}),
                     z.object({id: z.string().regex(/^[a-zA-Z0-9]+$/), type: z.literal('string'), value: z.string(), name: z.string().trim().min(1).optional()}),
                 ])).optional().describe('本规则变量定义；节点引用时 scope 使用 rule'),
+                durationRequirement: z.object({
+                    durationMs: z.number().int().positive(),
+                    intent: z.enum(['state_hold', 'action_delay']),
+                    hardRequirement: z.boolean().optional(),
+                    targetDids: z.array(z.string()).optional(),
+                    nodeId: z.string().optional(),
+                    sourceNodeId: z.string().optional(),
+                    sourceDid: z.string().optional(),
+                    sourceOperator: z.string().optional(),
+                    sourceValues: z.array(z.union([z.string(), z.number(), z.boolean()])).optional(),
+                }).optional().describe('时间意图：状态持续或动作后延时；durationMs 始终为毫秒，可绑定具体 nodeId/sourceNodeId'),
+                durationRequirements: z.array(z.object({
+                    durationMs: z.number().int().positive(),
+                    intent: z.enum(['state_hold', 'action_delay']),
+                    hardRequirement: z.boolean().optional(),
+                    targetDids: z.array(z.string()).optional(),
+                    nodeId: z.string().optional(),
+                    sourceNodeId: z.string().optional(),
+                    sourceDid: z.string().optional(),
+                    sourceOperator: z.string().optional(),
+                    sourceValues: z.array(z.union([z.string(), z.number(), z.boolean()])).optional(),
+                })).optional().describe('多个独立时长意图；每项应绑定具体 nodeId，避免不同分支共用一条全局时长'),
                 enable: z.boolean().optional().describe('是否启用'),
             }),
-            execute: async ({name, nodes, variables, enable = true}) => {
-                return createGraph(gateway, {name, nodes, variables, enable});
+            execute: async ({name, nodes, variables, durationRequirement, durationRequirements, enable = true}) => {
+                return createGraph(gateway, {name, nodes, variables, durationRequirement, durationRequirements, enable});
             },
         }),
 
@@ -181,9 +211,31 @@ export function createCoreTools(gateway: GatewayClient) {
                 name: z.string().optional().describe('新规则名称'),
                 nodes: z.array(z.any()).optional().describe('新节点列表'),
                 enable: z.boolean().optional().describe('是否启用'),
+                durationRequirement: z.object({
+                    durationMs: z.number().int().positive(),
+                    intent: z.enum(['state_hold', 'action_delay']),
+                    hardRequirement: z.boolean().optional(),
+                    targetDids: z.array(z.string()).optional(),
+                    nodeId: z.string().optional(),
+                    sourceNodeId: z.string().optional(),
+                    sourceDid: z.string().optional(),
+                    sourceOperator: z.string().optional(),
+                    sourceValues: z.array(z.union([z.string(), z.number(), z.boolean()])).optional(),
+                }).optional().describe('时间意图；durationMs 始终为毫秒，可绑定具体 nodeId/sourceNodeId'),
+                durationRequirements: z.array(z.object({
+                    durationMs: z.number().int().positive(),
+                    intent: z.enum(['state_hold', 'action_delay']),
+                    hardRequirement: z.boolean().optional(),
+                    targetDids: z.array(z.string()).optional(),
+                    nodeId: z.string().optional(),
+                    sourceNodeId: z.string().optional(),
+                    sourceDid: z.string().optional(),
+                    sourceOperator: z.string().optional(),
+                    sourceValues: z.array(z.union([z.string(), z.number(), z.boolean()])).optional(),
+                })).optional().describe('多个独立时长意图；每项应绑定具体 nodeId'),
             }),
-            execute: async ({id, name, nodes, enable}) => {
-                return updateGraph(gateway, id, {name, nodes, enable});
+            execute: async ({id, name, nodes, enable, durationRequirement, durationRequirements}) => {
+                return updateGraph(gateway, id, {name, nodes, enable, durationRequirement, durationRequirements});
             },
         }),
 
@@ -317,13 +369,39 @@ export function createCoreTools(gateway: GatewayClient) {
         validate_graph_capabilities: defineTool({
             description: '根据真实 MIOT Spec 校验完整候选图中的设备能力和变量引用。空图通过仅表示没有设备引用可检查，不能据此跳过候选图校验。',
             parameters: z.object({
-                graph: z.object({id: z.string().optional(), nodes: z.array(z.any()), cfg: z.any().optional()}),
+                graph: z.object({
+                    id: z.string().optional(),
+                    nodes: z.array(z.any()),
+                    cfg: z.any().optional(),
+                    durationRequirement: z.object({
+                        durationMs: z.number().int().positive(),
+                        intent: z.enum(['state_hold', 'action_delay']),
+                        hardRequirement: z.boolean().optional(),
+                        targetDids: z.array(z.string()).optional(),
+                        nodeId: z.string().optional(),
+                        sourceNodeId: z.string().optional(),
+                        sourceDid: z.string().optional(),
+                        sourceOperator: z.string().optional(),
+                        sourceValues: z.array(z.union([z.string(), z.number(), z.boolean()])).optional(),
+                    }).optional(),
+                    durationRequirements: z.array(z.object({
+                        durationMs: z.number().int().positive(),
+                        intent: z.enum(['state_hold', 'action_delay']),
+                        hardRequirement: z.boolean().optional(),
+                        targetDids: z.array(z.string()).optional(),
+                        nodeId: z.string().optional(),
+                        sourceNodeId: z.string().optional(),
+                        sourceDid: z.string().optional(),
+                        sourceOperator: z.string().optional(),
+                        sourceValues: z.array(z.union([z.string(), z.number(), z.boolean()])).optional(),
+                    })).optional(),
+                }),
             }),
             execute: async ({graph}) => validateGraphCapabilitiesWithGateway(gateway, {
                 id: graph.id || 'validation-draft',
                 nodes: graph.nodes,
                 cfg: graph.cfg || {},
-            } as any),
+            } as any, graph.durationRequirements ?? graph.durationRequirement),
         }),
 
         activate_skill: defineTool({

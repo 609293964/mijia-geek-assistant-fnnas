@@ -1,6 +1,6 @@
 import { GatewayClient } from '../gateway/client';
 import type { DeviceListResponse, MiotActionCapability, MiotEventCapability, MiotPropertyCapability } from '../types/device';
-import type { Graph, GraphNode, ValidationError } from '../types/graph';
+import type { DurationRequirement, Graph, GraphNode, ValidationError } from '../types/graph';
 import type { Variable } from '../types';
 import { normalizeMiotSpec } from './device';
 
@@ -17,6 +17,229 @@ export interface CapabilityValidationReport {
     warnings: ValidationError[];
     inspectedDids: string[];
     inspectedUrns: string[];
+}
+
+function durationUnitMs(unit?: string): number | undefined {
+    if (!unit) return undefined;
+    const normalized = unit.toLowerCase();
+    if (normalized === 'ms' || normalized === 'millisecond' || normalized === 'milliseconds') return 1;
+    if (normalized === 's' || normalized === 'second' || normalized === 'seconds') return 1000;
+    if (normalized === 'min' || normalized === 'minute' || normalized === 'minutes') return 60000;
+    if (normalized === 'h' || normalized === 'hour' || normalized === 'hours') return 3600000;
+    return undefined;
+}
+
+function isDurationProperty(property: MiotPropertyCapability): boolean {
+    const text = `${property.desc} ${property.unit || ''}`.toLowerCase();
+    return /duration|timeout|持续|时长|无动作|无人|no_motion|delay/.test(text)
+        && durationUnitMs(property.unit) !== undefined;
+}
+
+function representableDuration(property: MiotPropertyCapability, durationMs: number): boolean {
+    const unit = durationUnitMs(property.unit);
+    if (!unit) return false;
+    const value = durationMs / unit;
+    if (!Number.isInteger(value)) return false;
+    if (property.list) return property.list.some((item) => item.value === value);
+    if (property.range) return value >= property.range.min && value <= property.range.max
+        && ((value - property.range.min) % property.range.step === 0);
+    return true;
+}
+
+function nativeDurationDescription(property: MiotPropertyCapability): string {
+    const limits = property.list
+        ? `可选值 ${JSON.stringify(property.list.map((item) => item.value))}`
+        : property.range
+            ? `范围 ${JSON.stringify(property.range)}`
+            : '无枚举/范围信息';
+    return `${property.desc} (siid=${property.siid}, piid=${property.piid}, unit=${property.unit}, ${limits}, access=${property.access.join(',') || '未知'})`;
+}
+
+function durationRequirementsList(requirement?: DurationRequirement | DurationRequirement[]): DurationRequirement[] {
+    if (!requirement) return [];
+    return Array.isArray(requirement) ? requirement : [requirement];
+}
+
+function graphHasPath(nodes: GraphNode[], fromId: string, toId: string): boolean {
+    const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+    const visited = new Set<string>();
+    const queue = [fromId];
+    while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (current === toId) return true;
+        if (visited.has(current)) continue;
+        visited.add(current);
+        const node = nodeMap.get(current);
+        if (!node) continue;
+        for (const targets of Object.values(node.outputs || {})) {
+            if (!Array.isArray(targets)) continue;
+            for (const target of targets) {
+                if (typeof target !== 'string') continue;
+                const dot = target.lastIndexOf('.');
+                if (dot > 0) queue.push(target.slice(0, dot));
+            }
+        }
+    }
+    return false;
+}
+
+function upstreamNodes(nodes: GraphNode[], targetId: string): GraphNode[] {
+    const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+    const reverse = new Map<string, string[]>();
+    for (const node of nodes) {
+        for (const targets of Object.values(node.outputs || {})) {
+            if (!Array.isArray(targets)) continue;
+            for (const target of targets) {
+                if (typeof target !== 'string') continue;
+                const dot = target.lastIndexOf('.');
+                if (dot <= 0) continue;
+                const id = target.slice(0, dot);
+                const sources = reverse.get(id) || [];
+                sources.push(node.id);
+                reverse.set(id, sources);
+            }
+        }
+    }
+
+    const result: GraphNode[] = [];
+    const visited = new Set<string>();
+    const queue = [...(reverse.get(targetId) || [])];
+    while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const node = nodeMap.get(id);
+        if (!node) continue;
+        result.push(node);
+        queue.push(...(reverse.get(id) || []));
+    }
+    return result;
+}
+
+function validateImplicitNativeDurationChoice(nodes: GraphNode[], devices: Map<string, DeviceCapabilities>): ValidationError[] {
+    const errors: ValidationError[] = [];
+    for (const hold of nodes.filter((node) => node.type === 'statusLast')) {
+        const timeout = asRecord(hold.props).timeout;
+        if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout <= 0) continue;
+        const sources = upstreamNodes(nodes, hold.id);
+        const dids = [...new Set(sources
+            .map((node) => asRecord(node.props).did)
+            .filter((did): did is string => typeof did === 'string'))];
+        for (const did of dids) {
+            const device = devices.get(did);
+            if (!device) continue;
+            const native = device.properties.find((property) =>
+                isDurationProperty(property)
+                && property.access.includes('notify')
+                && representableDuration(property, timeout));
+            if (!native) continue;
+            const alreadyNative = sources.some((node) => {
+                const props = asRecord(node.props);
+                return (node.type === 'deviceInput' || node.type === 'deviceGet')
+                    && props.did === did
+                    && props.piid === native.piid;
+            });
+            if (!alreadyNative) {
+                errors.push(error(
+                    hold,
+                    'native_duration_required',
+                    `检测到 ${hold.id} 使用 statusLast(${timeout}ms)，但设备 ${did} 的原生时长属性可精确表达该需求；应直接使用 ${nativeDurationDescription(native)}`,
+                ));
+            }
+        }
+    }
+    return errors;
+}
+
+function validateDurationRequirement(nodes: GraphNode[], devices: Map<string, DeviceCapabilities>, requirement?: DurationRequirement | DurationRequirement[]): ValidationError[] {
+    const errors: ValidationError[] = [];
+    for (const current of durationRequirementsList(requirement)) {
+        if (!Number.isInteger(current.durationMs) || current.durationMs <= 0) continue;
+
+        const boundNode = current.nodeId ? nodes.find((node) => node.id === current.nodeId) : undefined;
+        if (current.nodeId && !boundNode) {
+            errors.push(error({ id: current.nodeId } as GraphNode, 'duration_node_not_found', `时长要求绑定的节点 ${current.nodeId} 不存在`));
+            continue;
+        }
+
+        const expectedType = current.intent === 'state_hold' ? 'statusLast' : 'delay';
+        if (boundNode && boundNode.type !== expectedType) {
+            errors.push(error(boundNode, 'duration_node_type_mismatch', `时长要求 ${current.durationMs}ms 应绑定 ${expectedType}，当前是 ${boundNode.type}`));
+        }
+
+        const matchingNodes = nodes.filter((node) => node.type === expectedType
+            && (!current.nodeId || node.id === current.nodeId)
+            && asRecord(node.props).timeout === current.durationMs);
+        if (matchingNodes.length === 0) {
+            const candidate = boundNode || nodes.find((node) => node.type === expectedType) || nodes[0] || ({id: '(graph)'} as GraphNode);
+            errors.push(error(candidate, 'duration_node_mismatch', `${expectedType} 必须有 timeout=${current.durationMs}ms 的节点`));
+        }
+
+        if (current.sourceNodeId) {
+            const source = nodes.find((node) => node.id === current.sourceNodeId);
+            if (!source) {
+                errors.push(error(boundNode || ({id: current.sourceNodeId} as GraphNode), 'duration_source_not_found', `时长要求绑定的状态来源节点 ${current.sourceNodeId} 不存在`));
+            } else {
+                if (current.sourceDid !== undefined && asRecord(source.props).did !== current.sourceDid) {
+                    errors.push(error(source, 'duration_source_device_mismatch', `状态来源节点 ${source.id} 不属于设备 ${current.sourceDid}`));
+                }
+                if (current.sourceOperator !== undefined && asRecord(source.props).operator !== current.sourceOperator) {
+                    errors.push(error(source, 'duration_source_operator_mismatch', `状态来源节点 ${source.id} 的 operator 应为 ${current.sourceOperator}`));
+                }
+                if (current.sourceValues !== undefined) {
+                    const sourceValues = asRecord(source.props).v1;
+                    const matches = Array.isArray(sourceValues)
+                        && sourceValues.length === current.sourceValues.length
+                        && sourceValues.every((value, index) => value === current.sourceValues![index]);
+                    if (!matches) {
+                        errors.push(error(source, 'duration_source_value_mismatch', `状态来源节点 ${source.id} 的 v1 应为 ${JSON.stringify(current.sourceValues)}`));
+                    }
+                }
+                if (boundNode && !graphHasPath(nodes, source.id, boundNode.id)) {
+                    errors.push(error(boundNode, 'duration_source_disconnected', `状态来源节点 ${source.id} 未连接到 ${boundNode.id}，请检查有人/无人分支`));
+                }
+            }
+        }
+
+        if (current.intent === 'state_hold') {
+            const delays = nodes.filter((node) => node.type === 'delay');
+            if (delays.length > 0 && !boundNode) {
+                errors.push(error(delays[0], 'delay_used_for_state_hold', '状态持续判定不能使用 delay，应使用 statusLast'));
+            }
+        } else {
+            const statusLast = nodes.filter((node) => node.type === 'statusLast');
+            if (statusLast.length > 0 && !boundNode) {
+                errors.push(error(statusLast[0], 'delay_intent_mismatch', '动作执行后的等待应使用 delay，不应使用 statusLast'));
+            }
+        }
+
+        const targetDids = current.targetDids
+            || (current.sourceDid ? [current.sourceDid] : [...new Set(nodes.map((node) => asRecord(node.props).did).filter((did): did is string => typeof did === 'string'))]);
+        if (current.intent === 'action_delay') continue;
+        for (const did of targetDids) {
+            const device = devices.get(did);
+            if (!device) continue;
+            const native = device.properties.filter(isDurationProperty);
+            const exactNativeCandidate = native.find((property) => representableDuration(property, current.durationMs));
+            const exactNative = exactNativeCandidate?.access.includes('notify') ? exactNativeCandidate : undefined;
+            const hasBoundStatusLast = matchingNodes.length > 0;
+            const nativeNode = exactNative && nodes.some((node) => {
+                const props = asRecord(node.props);
+                return (node.type === 'deviceInput' || node.type === 'deviceGet') && props.did === did && props.piid === exactNative.piid;
+            });
+            if (exactNative && hasBoundStatusLast) {
+                errors.push(error(boundNode || nodes[0] || ({id: '(graph)'} as GraphNode), 'native_duration_required', `设备 ${did} 的原生时长属性可精确表示 ${current.durationMs}ms，不能再使用 statusLast；应改用 ${nativeDurationDescription(exactNative)}`));
+            } else if (exactNative && !nativeNode) {
+                errors.push(error(boundNode || nodes[0] || ({id: '(graph)'} as GraphNode), 'native_duration_preferred', `设备 ${did} 的原生时长属性可精确表示 ${current.durationMs}ms，应使用 ${nativeDurationDescription(exactNative)}`));
+            } else if (!exactNativeCandidate && native.length > 0 && current.hardRequirement !== false && !hasBoundStatusLast) {
+                const example = native[0];
+                errors.push(error(boundNode || nodes[0] || ({id: '(graph)'} as GraphNode), 'duration_not_representable', `设备 ${did} 的原生时长属性无法精确表示 ${current.durationMs}ms（例如 ${nativeDurationDescription(example)}）；应改用 statusLast(timeout=${current.durationMs})`));
+            } else if (native.length === 0 && current.hardRequirement !== false && !hasBoundStatusLast) {
+                errors.push(error(boundNode || nodes[0] || ({id: '(graph)'} as GraphNode), 'state_hold_missing_status_last', `设备 ${did} 没有可用原生时长属性，必须使用 statusLast(timeout=${current.durationMs})`));
+            }
+        }
+    }
+    return errors;
 }
 
 interface VariableReference {
@@ -184,7 +407,7 @@ export async function validateGraphVariablesWithGateway(gateway: GatewayClient, 
     return errors;
 }
 
-export function validateGraphCapabilities(nodes: GraphNode[], devices: Map<string, DeviceCapabilities>): CapabilityValidationReport {
+export function validateGraphCapabilities(nodes: GraphNode[], devices: Map<string, DeviceCapabilities>, requirement?: DurationRequirement | DurationRequirement[]): CapabilityValidationReport {
     const errors: ValidationError[] = [];
     const warnings: ValidationError[] = [];
     for (const node of nodes) {
@@ -253,10 +476,14 @@ export function validateGraphCapabilities(nodes: GraphNode[], devices: Map<strin
         }
         else if (!setVar) errors.push(...validateValue(node, property, props.operator, props.v1, props.v2));
     }
+    errors.push(...validateDurationRequirement(nodes, devices, requirement));
+    if (durationRequirementsList(requirement).length === 0) {
+        errors.push(...validateImplicitNativeDurationChoice(nodes, devices));
+    }
     return { valid: errors.length === 0, errors, warnings, inspectedDids: [...devices.keys()], inspectedUrns: [...new Set([...devices.values()].map((device) => device.urn))] };
 }
 
-export async function validateGraphCapabilitiesWithGateway(gateway: GatewayClient, graph: Graph): Promise<CapabilityValidationReport> {
+export async function validateGraphCapabilitiesWithGateway(gateway: GatewayClient, graph: Graph, requirement?: DurationRequirement | DurationRequirement[]): Promise<CapabilityValidationReport> {
     const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
     const dids = [...new Set(nodes
         .map((node) => node && typeof node === 'object' ? asRecord(node.props).did : undefined)
@@ -312,7 +539,7 @@ export async function validateGraphCapabilitiesWithGateway(gateway: GatewayClien
         const device = devList[did];
         if (device?.urn && specs.has(device.urn)) devices.set(did, specs.get(device.urn)!);
     }
-    const report = validateGraphCapabilities(nodes, devices);
+    const report = validateGraphCapabilities(nodes, devices, requirement);
     report.errors.push(...await validateGraphVariablesWithGateway(gateway, nodes));
     report.errors.unshift(...errors);
     report.valid = report.errors.length === 0;

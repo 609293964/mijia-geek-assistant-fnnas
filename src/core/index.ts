@@ -10,6 +10,7 @@ export type { GatewayManager } from './gateway/manager';
 
 // 工具函数
 export { getDevices, getDevice } from './tools/device';
+export { findDeviceUsage, findDeviceUsageInputSchema } from './tools/deviceUsage';
 export { getGraphs, getGraph, createGraph, updateGraph, deleteGraph, toggleGraph } from './tools/graph';
 export { getVariables, setVariable, createVariable, deleteVariable, getVariableValue, getVariableConfig } from './tools/variable';
 export { callGatewayApi, READ_ONLY_GATEWAY_METHODS } from './tools/misc';
@@ -27,5 +28,6 @@ export type {
     MiotValueListItem,
     MiotValueRange,
 } from './types/device';
-export type { Graph, GraphNode, GraphConfig, GraphSummary, CreateGraphInput, UpdateGraphInput, ValidationError } from './types/graph';
+export type { Graph, GraphNode, GraphConfig, GraphSummary, CreateGraphInput, UpdateGraphInput, DurationRequirement, ValidationError } from './types/graph';
+export type { DeviceUsageNode, DeviceUsageGraph, DeviceUsage, DeviceUsageReport } from './types/graph';
 export type { ToolResult, ToolError, ToolResponse, Variable } from './types';

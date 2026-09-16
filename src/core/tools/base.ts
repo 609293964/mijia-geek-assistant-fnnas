@@ -13,6 +13,35 @@ const DUAL_OUTPUT_TYPES = new Set(['deviceGet', 'varGet']);
 
 const STATE_CONDITION_INPUT_TYPES = new Set(['condition', 'logicOr', 'logicAnd', 'logicNot']);
 
+/** 这些节点输出的是一次性的事件信号，不能直接当作 logicOr/logicAnd 的状态值。 */
+const EVENT_SOURCE_TYPES = new Set([
+    'deviceInput',
+    'deviceInputSetVar',
+    'alarmClock',
+    'onLoad',
+    'varChange',
+    'signalOr',
+]);
+
+const INDEXED_INPUT_TYPES = new Set(['signalOr', 'logicOr', 'logicAnd']);
+
+function durationUnitMs(unit: unknown): number | undefined {
+    if (typeof unit !== 'string') return undefined;
+    const normalized = unit.toLowerCase();
+    if (normalized === 'ms' || normalized === 'millisecond' || normalized === 'milliseconds') return 1;
+    if (normalized === 's' || normalized === 'second' || normalized === 'seconds') return 1000;
+    if (normalized === 'min' || normalized === 'minute' || normalized === 'minutes') return 60000;
+    if (normalized === 'h' || normalized === 'hour' || normalized === 'hours') return 3600000;
+    return undefined;
+}
+
+function preferredDurationDisplay(timeout: number): { unit: 'ms' | 's' | 'min' | 'h'; value: number } {
+    if (timeout % 3600000 === 0) return { unit: 'h', value: timeout / 3600000 };
+    if (timeout % 60000 === 0) return { unit: 'min', value: timeout / 60000 };
+    if (timeout % 1000 === 0) return { unit: 's', value: timeout / 1000 };
+    return { unit: 'ms', value: timeout };
+}
+
 function targetInfo(target: string): { id: string; port: string } | null {
     const dotIdx = target.lastIndexOf('.');
     if (dotIdx === -1) return null;
@@ -56,6 +85,78 @@ function canAcceptStateCondition(target: string, nodeMap: Map<string, GraphNode>
     return targetNode.type === 'condition' || reachesConditionInput(targetNode.id, nodeMap, new Set());
 }
 
+function validateIndexedInputs(node: GraphNode, errors: ValidationError[]): void {
+    if (!INDEXED_INPUT_TYPES.has(node.type)) return;
+
+    const keys = Object.keys(node.inputs || {});
+    const indexes = keys
+        .map((key) => /^input(\d+)$/.exec(key))
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match) => Number(match[1]))
+        .sort((a, b) => a - b);
+
+    if (keys.some((key) => !/^input\d+$/.test(key))) {
+        errors.push({
+            nodeId: node.id,
+            type: 'invalid_indexed_input',
+            level: 'error',
+            message: `${node.type} inputs 只能使用 input0、input1… 格式`,
+        });
+    }
+
+    for (let i = 0; i < indexes.length; i += 1) {
+        if (indexes[i] !== i) {
+            errors.push({
+                nodeId: node.id,
+                type: 'non_contiguous_inputs',
+                level: 'error',
+                message: `${node.type} inputs 必须从 input0 开始连续声明，当前为 [${keys.join(', ')}]`,
+            });
+            break;
+        }
+    }
+
+    if (node.type === 'signalOr') {
+        for (const key of keys) {
+            if (node.inputs?.[key] !== null) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'signal_input_not_null',
+                    level: 'error',
+                    message: `signalOr.${key} 必须为 null（事件输入不能填写 boolean 状态）`,
+                });
+            }
+        }
+    }
+}
+
+/**
+ * 补齐网关 UI 所需的可推导展示字段。
+ *
+ * statusLast 的 props.timeout 是运行时毫秒值，cfg.unit/cfg.value 是极客版
+ * 卡片显示值。只在字段完全缺失，或已明确 unit 但缺少 value 时补齐；
+ * 用户明确填写的值不在这里静默覆盖，交给 validateGraph 报出不一致。
+ */
+export function normalizeGraphNodeForWrite(node: GraphNode): GraphNode {
+    if (node.type !== 'statusLast') return node;
+
+    const props = node.props || {};
+    const timeout = props.timeout;
+    if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout <= 0) return node;
+
+    const cfg = { ...(node.cfg || {}) };
+    const hasUnit = cfg.unit !== undefined;
+    const hasValue = cfg.value !== undefined;
+    if (!hasUnit && !hasValue) {
+        Object.assign(cfg, preferredDurationDisplay(timeout));
+    } else if (hasUnit && !hasValue) {
+        const unit = durationUnitMs(cfg.unit);
+        if (unit && timeout % unit === 0) cfg.value = timeout / unit;
+    }
+
+    return { ...node, cfg };
+}
+
 export function validateGraph(graph: Graph): ValidationError[] {
     const errors: ValidationError[] = [];
     const nodeMap = new Map<string, GraphNode>();
@@ -94,6 +195,16 @@ export function validateGraph(graph: Graph): ValidationError[] {
                 const targetPort = target.substring(dotIdx + 1);
                 if (!nodeMap.has(targetId)) {
                     errors.push({ nodeId: node.id, type: 'target_not_found', level: 'error', message: `outputs.${portName} 引用不存在的节点 "${targetId}"` });
+                    continue;
+                }
+                const targetNode = nodeMap.get(targetId)!;
+                if (!Object.prototype.hasOwnProperty.call(targetNode.inputs || {}, targetPort)) {
+                    errors.push({
+                        nodeId: node.id,
+                        type: 'target_port_not_found',
+                        level: 'error',
+                        message: `outputs.${portName} 引用的端口 "${targetId}.${targetPort}" 未在目标节点 inputs 中声明`,
+                    });
                     continue;
                 }
                 const key = `${targetId}.${targetPort}`;
@@ -167,6 +278,78 @@ export function validateGraph(graph: Graph): ValidationError[] {
             errors.push({ nodeId: node.id, type: 'delay_wrong_input', level: 'error', message: 'delay inputs 必须用 "input"，不是 "trigger"' });
         }
 
+        if (node.type === 'statusLast'
+            && Object.prototype.hasOwnProperty.call(node.inputs || {}, 'input')
+            && (!incoming.has(`${node.id}.input`) || incoming.get(`${node.id}.input`)!.size === 0)) {
+            errors.push({
+                nodeId: node.id,
+                type: 'status_last_no_input',
+                level: 'error',
+                message: `statusLast "${node.id}" 的 input 无状态来源；它不会自行开始计时`,
+            });
+        }
+
+        if (node.type === 'statusLast') {
+            const props = node.props || {};
+            const cfg = node.cfg || {};
+            const timeout = props.timeout;
+            const unit = durationUnitMs(cfg.unit);
+            const value = cfg.value;
+            if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout <= 0) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'status_last_invalid_timeout',
+                    level: 'error',
+                    message: 'statusLast.props.timeout 必须是大于 0 的整数毫秒数',
+                });
+            }
+            if (unit === undefined || typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'status_last_missing_display',
+                    level: 'error',
+                    message: 'statusLast.cfg 必须声明有效的 unit 和 value，供极客版卡片显示维持时间',
+                });
+            } else if (typeof timeout === 'number' && Number.isFinite(timeout) && value * unit !== timeout) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'status_last_display_mismatch',
+                    level: 'error',
+                    message: `statusLast.cfg.value × unit 必须等于 props.timeout（当前 ${value} × ${cfg.unit} ≠ ${timeout}ms）`,
+                });
+            }
+        }
+
+        if (node.type === 'deviceOutput') {
+            const inputKeys = Object.keys(node.inputs || {});
+            if (!Object.prototype.hasOwnProperty.call(node.inputs || {}, 'trigger')) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'device_output_missing_trigger',
+                    level: 'error',
+                    message: 'deviceOutput inputs 必须声明 "trigger": null',
+                });
+            }
+            if (inputKeys.some((key) => key !== 'trigger')) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'device_output_wrong_input',
+                    level: 'error',
+                    message: `deviceOutput 只接受 trigger 输入，当前为 [${inputKeys.join(', ')}]`,
+                });
+            }
+            if (Object.prototype.hasOwnProperty.call(node.inputs || {}, 'trigger') && node.inputs?.trigger !== null) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'device_output_trigger_not_null',
+                    level: 'error',
+                    message: 'deviceOutput.inputs.trigger 必须为 null',
+                });
+            }
+        }
+
+        validateIndexedInputs(node, errors);
+
         if (node.type === 'timeRange') {
             if ('output2' in (node.outputs || {})) {
                 errors.push({ nodeId: node.id, type: 'tr_has_output2', level: 'error', message: 'timeRange 只有 output，没有 output2' });
@@ -190,6 +373,26 @@ export function validateGraph(graph: Graph): ValidationError[] {
 
         if ((node.type === 'deviceInputSetVar' || node.type === 'deviceGetSetVar') && ((node.props as Record<string, unknown>)?.dtype === 'int' || (node.props as Record<string, unknown>)?.dtype === 'float')) {
             errors.push({ nodeId: node.id, type: 'var_dtype', level: 'warn', message: `${node.type} dtype 应为 "number"，当前 "${(node.props as Record<string, unknown>).dtype}"` });
+        }
+
+        for (const targets of Object.values(node.outputs || {})) {
+            if (!Array.isArray(targets)) continue;
+            for (const target of targets) {
+                const info = typeof target === 'string' ? targetInfo(target) : null;
+                if (!info) continue;
+                const targetNode = nodeMap.get(info.id);
+                if (!targetNode || !Object.prototype.hasOwnProperty.call(targetNode.inputs || {}, info.port)) continue;
+
+                if (EVENT_SOURCE_TYPES.has(node.type)
+                    && (targetNode.type === 'logicOr' || targetNode.type === 'logicAnd' || targetNode.type === 'logicNot')) {
+                    errors.push({
+                        nodeId: node.id,
+                        type: 'event_to_state_logic',
+                        level: 'error',
+                        message: `${node.type}.output 是事件信号，不能连接 ${targetNode.type}.${info.port}；事件合并请使用 signalOr`,
+                    });
+                }
+            }
         }
     }
 

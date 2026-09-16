@@ -20,6 +20,16 @@ The packer is built into the project and writes normalized Linux permissions and
 
 ## Runtime Notes
 
+### Version 0.0.9
+
+- Adds the read-only `find_device_usage` Web Agent tool, adapted from upstream PR #21, with incomplete-scan reporting and a 30-second request-wait budget.
+- Uses the existing `nodejs_v22` dependency and Native lifecycle; no new dependency or permission is required.
+- `package.json` is the version source. Keep `package-lock.json` in sync; `prepare:fpk` updates both manifests and `pack:fpk` writes `fnnas.mijia-geek-ai_<version>_x86.fpk`.
+- The device-usage Skill reference is included under `server/.agents/` in `app.tgz` for runtime lookup.
+- Local tests and FPK validation do not establish a successful real fnOS installation. After installing on a NAS, verify the displayed version, startup, retained settings and the new query tool.
+
+### Paths and Configuration
+
 - The package declares `install_dep_apps=nodejs_v22`.
 - `cmd/main` starts `${TRIM_APPDEST}/server/server.js` on `${TRIM_SERVICE_PORT}` and falls back to port `3010`.
 - Sessions are stored in `${TRIM_PKGVAR}/sessionstore` via `SESSION_STORE_DIR`.

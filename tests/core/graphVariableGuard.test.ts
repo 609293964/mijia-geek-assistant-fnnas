@@ -77,6 +77,37 @@ test('创建规则使用极客版本规则变量兼容的纯数字 ID', async ()
     assert.match((graph as { id: string }).id, /^\d+$/);
 });
 
+test('创建规则自动补齐 statusLast 的 UI 维持时间字段', async () => {
+    let graph: any;
+    const gateway = {
+        async callApi(method: string, input: unknown): Promise<unknown> {
+            if (method === 'setGraph') graph = input;
+            if (method === 'getGraphList') return [];
+            if (method === 'getVarScopeList') return { scopes: [] };
+            return undefined;
+        },
+    } as unknown as GatewayClient;
+
+    const result = await createGraph(gateway, {
+        name: 'StatusLast UI',
+        enable: false,
+        nodes: [
+            { id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: { output: ['hold.input'] } },
+            { id: 'hold', type: 'statusLast', cfg: {}, props: { timeout: 30000 }, inputs: { input: null }, outputs: { output: [] } },
+        ],
+    });
+
+    assert.equal(result.success, true);
+    const savedHold = graph.nodes.find((node: any) => node.id === 'hold');
+    assert.deepEqual(savedHold.cfg, {
+        name: 'statusLast',
+        version: 1,
+        unit: 's',
+        value: 30,
+        pos: savedHold.cfg.pos,
+    });
+});
+
 test('指定规则 ID 的完整图已存在时校正规则配置且不重复创建', async () => {
     const calls: string[] = [];
     const existing = { id: '1234567890123', nodes: [{ id: 'start', type: 'onLoad', cfg: { name: 'onLoad', version: 1 }, props: {}, inputs: {}, outputs: { output: [] } }], cfg: { enable: true } };

@@ -200,15 +200,21 @@ export async function getDevice(gateway: GatewayClient, dids: string[]): Promise
             if (device.urn) {
                 try {
                     const specUrl = `https://miot-spec.org/miot-spec-v2/instance?type=${encodeURIComponent(device.urn)}`;
-                    const specRes = await fetch(specUrl);
+                    const specRes = await fetch(specUrl, { signal: AbortSignal.timeout(10000) });
                     if (specRes.ok) {
                         Object.assign(info, normalizeMiotSpec(await specRes.json() as MiotSpec));
+                        info.specStatus = 'loaded';
                     } else {
+                        info.specStatus = 'unavailable';
                         info.specError = `HTTP ${specRes.status}`;
                     }
                 } catch (e) {
+                    info.specStatus = 'unavailable';
                     info.specError = String(e);
                 }
+            } else {
+                info.specStatus = 'unavailable';
+                info.specError = '设备缺少完整 URN，无法读取 MIOT Spec';
             }
 
             results.push(info);

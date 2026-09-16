@@ -1,6 +1,6 @@
 {
   "name": "mijia-geek-ai",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/build-next.mjs",

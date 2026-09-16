@@ -4,6 +4,7 @@
  */
 
 import {streamText, generateText, CoreMessage} from 'ai';
+import {chatCompletionError, chatFailure} from '../../lib/chat-diagnostics';
 import {createModel, ModelConfig, getModelConfigFromEnv} from '../ai/model';
 import {createCoreTools} from '../ai/tools-adapter';
 import {SYSTEM_PROMPT} from '../ai/prompts';
@@ -474,6 +475,12 @@ export class Agent {
                         break;
 
                     case 'finish':
+                        const completionError = chatCompletionError(true, fullText);
+                        if (completionError) {
+                            await this.saveAssistantMessage(completionError, thinkingText, toolCalls);
+                            yield {type: 'error', error: completionError};
+                            return;
+                        }
                         // 整体完成
                         // 保存到 sessionStore（复用现有架构）
                         await this.saveAssistantMessage(fullText, thinkingText, toolCalls);
@@ -484,7 +491,7 @@ export class Agent {
                         return;
 
                     case 'error':
-                        const streamError = formatAgentError(chunk.error);
+                        const streamError = chatFailure(chunk.error);
                         console.error('[AgentError]', JSON.stringify({
                             event: 'stream_error', sessionId: this.sessionId,
                             toolCallId: currentToolCall?.toolCallId, tool: currentToolCall?.tool,
@@ -500,7 +507,7 @@ export class Agent {
                             };
                             currentToolCall = null;
                         }
-                        await this.saveAssistantMessage(fullText, thinkingText, toolCalls);
+                        await this.saveAssistantMessage([fullText, streamError].filter(Boolean).join('\n\n'), thinkingText, toolCalls);
                         yield {type: 'error', error: streamError};
                         return;
                 }
@@ -508,14 +515,15 @@ export class Agent {
 
             // 如果循环结束但没有收到 finish 事件
             // 保存到 sessionStore
-            await this.saveAssistantMessage(fullText, thinkingText, toolCalls);
+            const incompleteError = chatCompletionError(false, fullText) || '[STREAM_INCOMPLETE] 响应未完整结束。';
+            await this.saveAssistantMessage([fullText, incompleteError].filter(Boolean).join('\n\n'), thinkingText, toolCalls);
             // 从 sessionStore 重新加载
             await this.reloadMessages();
 
-            yield {type: 'complete', message: fullText};
+            yield {type: 'error', error: incompleteError};
 
         } catch (error) {
-            const errorMessage = formatAgentError(error);
+            const errorMessage = chatFailure(error);
             console.error('[AgentError]', JSON.stringify({
                 event: 'run_error', sessionId: this.sessionId,
                 toolCallId: currentToolCall?.toolCallId, tool: currentToolCall?.tool,
@@ -530,7 +538,7 @@ export class Agent {
                     tool: currentToolCall.tool, result: failureResult, durationMs,
                 };
             }
-            await this.saveAssistantMessage(fullText, thinkingText, toolCalls);
+            await this.saveAssistantMessage([fullText, errorMessage].filter(Boolean).join('\n\n'), thinkingText, toolCalls);
             yield {type: 'error', error: errorMessage};
         }
     }

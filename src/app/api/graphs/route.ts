@@ -12,6 +12,7 @@ import {
     toggleGraph,
     updateGraph,
     type CreateGraphInput,
+    type DurationRequirement,
     type GatewayClient,
     type GraphNode,
     type ToolResponse,
@@ -147,6 +148,64 @@ function readOptionalVariables(body: Record<string, unknown>): NonNullable<Creat
     });
 }
 
+function readDurationRequirement(value: unknown, field: string): DurationRequirement {
+    if (!isPlainObject(value)) throw new ApiError(`${field} 必须是对象`);
+    const durationMs = value.durationMs;
+    const intent = value.intent;
+    if (typeof durationMs !== 'number' || !Number.isInteger(durationMs) || durationMs <= 0) {
+        throw new ApiError(`${field}.durationMs 必须是大于 0 的整数毫秒数`);
+    }
+    if (intent !== 'state_hold' && intent !== 'action_delay') {
+        throw new ApiError(`${field}.intent 必须是 state_hold 或 action_delay`);
+    }
+    const optionalString = (name: string): string | undefined => {
+        if (!(name in value)) return undefined;
+        if (typeof value[name] !== 'string' || !value[name].trim()) throw new ApiError(`${field}.${name} 必须是非空字符串`);
+        return value[name].trim();
+    };
+    const targetDids = value.targetDids;
+    if (targetDids !== undefined && (!Array.isArray(targetDids) || targetDids.some((did) => typeof did !== 'string' || !did.trim()))) {
+        throw new ApiError(`${field}.targetDids 必须是字符串数组`);
+    }
+    if (value.hardRequirement !== undefined && typeof value.hardRequirement !== 'boolean') {
+        throw new ApiError(`${field}.hardRequirement 必须是布尔值`);
+    }
+    const sourceValues = value.sourceValues;
+    if (sourceValues !== undefined && (!Array.isArray(sourceValues)
+        || sourceValues.some((item) => !['string', 'number', 'boolean'].includes(typeof item)))) {
+        throw new ApiError(`${field}.sourceValues 必须是字符串、数字或布尔值数组`);
+    }
+    const nodeId = optionalString('nodeId');
+    const sourceNodeId = optionalString('sourceNodeId');
+    const sourceDid = optionalString('sourceDid');
+    const sourceOperator = optionalString('sourceOperator');
+    return {
+        durationMs,
+        intent,
+        ...(value.hardRequirement === undefined ? {} : {hardRequirement: value.hardRequirement}),
+        ...(Array.isArray(targetDids) ? {targetDids: targetDids.map((did) => did.trim())} : {}),
+        ...(nodeId ? {nodeId} : {}),
+        ...(sourceNodeId ? {sourceNodeId} : {}),
+        ...(sourceDid ? {sourceDid} : {}),
+        ...(sourceOperator ? {sourceOperator} : {}),
+        ...(Array.isArray(sourceValues) ? {sourceValues} : {}),
+    };
+}
+
+function readOptionalDurationInputs(body: Record<string, unknown>): Pick<CreateGraphInput, 'durationRequirement' | 'durationRequirements'> {
+    const durationRequirement = 'durationRequirement' in body
+        ? readDurationRequirement(body.durationRequirement, 'durationRequirement')
+        : undefined;
+    const rawRequirements = body.durationRequirements;
+    if (rawRequirements !== undefined && (!Array.isArray(rawRequirements) || rawRequirements.length === 0)) {
+        throw new ApiError('durationRequirements 必须是非空数组');
+    }
+    const durationRequirements = Array.isArray(rawRequirements)
+        ? rawRequirements.map((item, index) => readDurationRequirement(item, `durationRequirements[${index}]`))
+        : undefined;
+    return {durationRequirement, durationRequirements};
+}
+
 function statusFromToolError(error: string): number {
     if (error.includes('不存在')) return 404;
     if (error.includes('校验失败') || error.includes('缺少') || error.includes('必须')) return 400;
@@ -239,9 +298,10 @@ export async function POST(request: NextRequest) {
         const name = readRequiredString(body, 'name');
         const nodes = readRequiredNodes(body);
         const variables = readOptionalVariables(body);
+        const durationInputs = readOptionalDurationInputs(body);
         const enable = readOptionalBoolean(body, 'enable') ?? true;
 
-        const result = await createGraph(gateway, {name, nodes, variables, enable});
+        const result = await createGraph(gateway, {name, nodes, variables, ...durationInputs, enable});
         if (!result.success) return toolErrorResponse(result);
 
         return NextResponse.json({
@@ -271,13 +331,15 @@ export async function PUT(request: NextRequest) {
         const name = readOptionalString(body, 'name');
         const nodes = readOptionalNodes(body);
         const enable = readOptionalBoolean(body, 'enable');
+        const durationInputs = readOptionalDurationInputs(body);
 
         if (name !== undefined) input.name = name;
         if (nodes !== undefined) input.nodes = nodes;
         if (enable !== undefined) input.enable = enable;
+        Object.assign(input, durationInputs);
 
         if (Object.keys(input).length === 0) {
-            throw new ApiError('至少需要提供 name、nodes 或 enable 中的一项');
+            throw new ApiError('至少需要提供 name、nodes、enable 或时长要求中的一项');
         }
 
         const result = await updateGraph(gateway, id, input);

@@ -6,7 +6,7 @@ import { GatewayClient } from '../gateway/client';
 import { randomInt } from 'node:crypto';
 import type { Graph, GraphSummary, CreateGraphInput, UpdateGraphInput, ValidationError } from '../types/graph';
 import type { ToolResponse } from '../types';
-import { validateGraph, layoutNodes } from './base';
+import { validateGraph, layoutNodes, normalizeGraphNodeForWrite } from './base';
 import { validateGraphCapabilitiesWithGateway } from './capabilityValidation';
 
 function nextGraphId(): string {
@@ -148,7 +148,7 @@ export async function createGraph(gateway: GatewayClient, input: CreateGraphInpu
         const definitionError = validateVariableDefinitions(variables);
         if (definitionError) return { success: false, error: definitionError };
 
-        const processedNodes = input.nodes.map((node) => ({
+        const processedNodes = input.nodes.map((node) => normalizeGraphNodeForWrite({
             ...node,
             cfg: {
                 ...node.cfg,
@@ -229,7 +229,11 @@ export async function createGraph(gateway: GatewayClient, input: CreateGraphInpu
                 }, 10000);
             }
         }
-        const capabilityReport = await validateGraphCapabilitiesWithGateway(gateway, graph);
+        const capabilityReport = await validateGraphCapabilitiesWithGateway(
+            gateway,
+            graph,
+            input.durationRequirements ?? input.durationRequirement,
+        );
         if (!capabilityReport.valid) throw new Error(`规则能力校验失败: ${capabilityReport.errors.map((item) => item.message).join('；')}`);
 
         if (!resumedExisting) shellCreatedHere = true;
@@ -267,7 +271,7 @@ export async function updateGraph(gateway: GatewayClient, id: string, input: Upd
             : null;
 
         const inputNodes = input.nodes || existing.nodes;
-        const processedNodes = inputNodes.map((node) => ({
+        const processedNodes = inputNodes.map((node) => normalizeGraphNodeForWrite({
             ...node,
             cfg: {
                 ...node.cfg,
@@ -316,7 +320,11 @@ export async function updateGraph(gateway: GatewayClient, id: string, input: Upd
         if (errorList.length > 0) {
             return { success: false, error: `规则校验失败（${errorList.length} 个错误），请修复后重试` };
         }
-        const capabilityReport = await validateGraphCapabilitiesWithGateway(gateway, graph);
+        const capabilityReport = await validateGraphCapabilitiesWithGateway(
+            gateway,
+            graph,
+            input.durationRequirements ?? input.durationRequirement,
+        );
         if (!capabilityReport.valid) return { success: false, error: `规则能力校验失败: ${capabilityReport.errors.map((item) => item.message).join('；')}` };
 
         await gateway.callApi('setGraph', graph, 10000);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Graph, GraphNode } from '../../src/core/types/graph';
-import { validateGraph } from '../../src/core/tools/base';
+import { normalizeGraphNodeForWrite, validateGraph } from '../../src/core/tools/base';
 
 function node(
     id: string,
@@ -110,4 +110,97 @@ test('deviceGetSetVar 接受极客版 UI 生成的单 output 结构', () => {
     ]);
 
     assert.deepEqual(validateGraph(value), []);
+});
+
+test('deviceOutput 必须声明 trigger 输入，不能使用 input', () => {
+    const invalid = graph([
+        node('fanOff', 'deviceOutput', { input: null }, { output: [] }, {
+            did: 'fan', siid: 2, piid: 1, value: false,
+        }),
+    ]);
+    const valid = graph([
+        node('fanOff', 'deviceOutput', { trigger: null }, { output: [] }, {
+            did: 'fan', siid: 2, piid: 1, value: false,
+        }),
+    ]);
+
+    const errors = validateGraph(invalid);
+    assert.equal(errors.some((error) => error.type === 'device_output_missing_trigger' && error.level === 'error'), true);
+    assert.equal(errors.some((error) => error.type === 'device_output_wrong_input' && error.level === 'error'), true);
+    assert.deepEqual(validateGraph(valid), []);
+});
+
+test('事件源不能直接接 logicOr，事件合并应使用 signalOr', () => {
+    const invalid = graph([
+        node('motion', 'deviceInput', {}, { output: ['or.input0'] }, {
+            did: 'sensor', siid: 2, piid: 1, dtype: 'boolean', operator: '=', v1: true,
+        }),
+        node('or', 'logicOr', { input0: null }, { output: ['fan.trigger'] }),
+        node('fan', 'deviceOutput', { trigger: null }, { output: [] }, {
+            did: 'fan', siid: 2, piid: 1, value: true,
+        }),
+    ]);
+    const valid = graph([
+        node('motion', 'deviceInput', {}, { output: ['or.input0'] }, {
+            did: 'sensor', siid: 2, piid: 1, dtype: 'boolean', operator: '=', v1: true,
+        }),
+        node('or', 'signalOr', { input0: null }, { output: ['fan.trigger'] }),
+        node('fan', 'deviceOutput', { trigger: null }, { output: [] }, {
+            did: 'fan', siid: 2, piid: 1, value: true,
+        }),
+    ]);
+
+    assert.equal(validateGraph(invalid).some((error) => error.type === 'event_to_state_logic' && error.level === 'error'), true);
+    assert.equal(validateGraph(valid).some((error) => error.type === 'event_to_state_logic'), false);
+});
+
+test('signalOr 输入必须使用连续的 inputN 且值为 null', () => {
+    const invalid = graph([
+        node('or', 'signalOr', { input1: true }, { output: [] }),
+    ]);
+
+    const errors = validateGraph(invalid);
+    assert.equal(errors.some((error) => error.type === 'non_contiguous_inputs'), true);
+    assert.equal(errors.some((error) => error.type === 'signal_input_not_null'), true);
+});
+
+test('statusLast 没有状态来源时拒绝创建，避免规则保存后永远不触发', () => {
+    const value = graph([
+        node('hold', 'statusLast', { input: null }, { output: ['fan.trigger'] }, { timeout: 30000 }),
+        node('fan', 'deviceOutput', { trigger: null }, { output: [] }, {
+            did: 'fan', siid: 2, piid: 1, value: true,
+        }),
+    ]);
+
+    assert.equal(validateGraph(value).some((error) => error.type === 'status_last_no_input' && error.level === 'error'), true);
+});
+
+test('statusLast 卡片展示字段必须与运行时 timeout 一致', () => {
+    const source = node('source', 'onLoad', {}, { output: ['hold.input'] });
+    const missingDisplay = graph([
+        source,
+        node('hold', 'statusLast', { input: null }, { output: [] }, { timeout: 30000 }),
+    ]);
+    const valid = graph([
+        source,
+        {
+            ...node('hold', 'statusLast', { input: null }, { output: [] }, { timeout: 30000 }),
+            cfg: { name: 'statusLast', version: 1, unit: 's', value: 30 },
+        },
+    ]);
+
+    assert.equal(validateGraph(missingDisplay).some((error) => error.type === 'status_last_missing_display'), true);
+    assert.equal(validateGraph(valid).some((error) => error.type.startsWith('status_last_')), false);
+});
+
+test('写入前可从 timeout 自动补齐 statusLast 的卡片展示字段', () => {
+    const normalized = normalizeGraphNodeForWrite(node(
+        'hold',
+        'statusLast',
+        { input: null },
+        { output: [] },
+        { timeout: 120000 },
+    ));
+
+    assert.deepEqual(normalized.cfg, { name: 'statusLast', version: 1, unit: 'min', value: 2 });
 });

@@ -1,5 +1,5 @@
 appname=fnnas.mijia-geek-ai
-version=0.0.8
+version=0.0.9
 display_name=米家极客版AI
 desc="""米家极客版接入AI，可配置AI服务商及一键登录"""
 platform=x86
