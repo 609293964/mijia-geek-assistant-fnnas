@@ -25,6 +25,19 @@ const EVENT_SOURCE_TYPES = new Set([
 
 const INDEXED_INPUT_TYPES = new Set(['signalOr', 'logicOr', 'logicAnd']);
 
+/** 画布备注不参与规则执行流程。 */
+const ANNOTATION_NODE_TYPES = new Set(['nop']);
+
+function annotationText(node: GraphNode): string {
+    const contents = node.cfg?.contents;
+    if (typeof contents === 'string') return contents;
+    if (!Array.isArray(contents)) return '';
+    return contents.map((segment: unknown) => {
+        if (!segment || typeof segment !== 'object' || !('insert' in segment)) return '';
+        return typeof segment.insert === 'string' ? segment.insert : '';
+    }).join('');
+}
+
 function durationUnitMs(unit: unknown): number | undefined {
     if (typeof unit !== 'string') return undefined;
     const normalized = unit.toLowerCase();
@@ -243,6 +256,18 @@ export function validateGraph(graph: Graph): ValidationError[] {
             errors.push({ nodeId: node.id, type: 'state_has_inputs', level: 'error', message: `${node.type} 是 state 节点，inputs 必须为 {}` });
         }
 
+        if (ANNOTATION_NODE_TYPES.has(node.type)) {
+            if (Object.keys(node.inputs || {}).length > 0) {
+                errors.push({ nodeId: node.id, type: 'nop_has_inputs', level: 'error', message: '备注节点 inputs 必须为 {}' });
+            }
+            if (Object.values(node.outputs || {}).some((targets) => Array.isArray(targets) && targets.length > 0)) {
+                errors.push({ nodeId: node.id, type: 'nop_has_outputs', level: 'error', message: '备注节点不能连接下游节点' });
+            }
+            if (!annotationText(node).trim()) {
+                errors.push({ nodeId: node.id, type: 'nop_empty', level: 'warn', message: '备注内容为空；正文应写入 cfg.contents[].insert' });
+            }
+        }
+
         if (node.type === 'loop') {
             const ik = Object.keys(node.inputs || {});
             if (!ik.includes('start') || !ik.includes('stop')) {
@@ -404,6 +429,11 @@ export function validateGraph(graph: Graph): ValidationError[] {
                 errors.push({ nodeId: nid, type: 'state_has_incoming', level: 'error', message: `state 节点 "${nid}" (${n.type}) 不应被触发，收到连接: ${s}` });
             });
         }
+        if (n && ANNOTATION_NODE_TYPES.has(n.type)) {
+            sources.forEach((s) => {
+                errors.push({ nodeId: nid, type: 'nop_has_incoming', level: 'error', message: `备注节点 "${nid}" 不应被连接，收到连接: ${s}` });
+            });
+        }
     });
 
     errors.sort((a, b) => (a.level === b.level ? 0 : a.level === 'error' ? -1 : 1));
@@ -417,9 +447,13 @@ export function layoutNodes(nodes: GraphNode[]): void {
     const V_SPACING = 80;
     const START_X = 100;
     const START_Y = 100;
+    const NOTE_DEFAULT_HEIGHT = 400;
+
+    const noteNodes = nodes.filter((node) => ANNOTATION_NODE_TYPES.has(node.type));
+    const flowNodes = nodes.filter((node) => !ANNOTATION_NODE_TYPES.has(node.type));
 
     const nodeMap = new Map<string, GraphNode>();
-    for (const node of nodes) {
+    for (const node of flowNodes) {
         nodeMap.set(node.id, node);
     }
 
@@ -427,12 +461,12 @@ export function layoutNodes(nodes: GraphNode[]): void {
     const inDegree = new Map<string, number>();
     const parentOf = new Map<string, string>();
 
-    for (const node of nodes) {
+    for (const node of flowNodes) {
         children.set(node.id, []);
         inDegree.set(node.id, 0);
     }
 
-    for (const node of nodes) {
+    for (const node of flowNodes) {
         const outputs = node.outputs || {};
         for (const [, targets] of Object.entries(outputs)) {
             if (!Array.isArray(targets)) continue;
@@ -451,7 +485,7 @@ export function layoutNodes(nodes: GraphNode[]): void {
     const levels = new Map<string, number>();
     const queue: string[] = [];
 
-    for (const node of nodes) {
+    for (const node of flowNodes) {
         if (inDegree.get(node.id) === 0) {
             queue.push(node.id);
             levels.set(node.id, 0);
@@ -473,7 +507,7 @@ export function layoutNodes(nodes: GraphNode[]): void {
         }
     }
 
-    for (const node of nodes) {
+    for (const node of flowNodes) {
         if (!levels.has(node.id)) {
             levels.set(node.id, 0);
         }
@@ -509,7 +543,15 @@ export function layoutNodes(nodes: GraphNode[]): void {
         }
     }
 
+    let noteBottom = START_Y;
     for (const node of nodes) {
+        const existingPos = node.cfg?.pos;
+        const existingY = existingPos && typeof existingPos === 'object' && 'y' in existingPos ? existingPos.y : undefined;
+        if (typeof existingY === 'number' && Number.isFinite(existingY)) noteBottom = Math.min(noteBottom, existingY);
+    }
+    for (const pos of positions.values()) noteBottom = Math.min(noteBottom, pos.y);
+
+    for (const node of flowNodes) {
         const pos = positions.get(node.id);
         if (pos) {
             node.cfg = node.cfg || {};
@@ -520,5 +562,17 @@ export function layoutNodes(nodes: GraphNode[]): void {
                 height: NODE_HEIGHT,
             };
         }
+    }
+
+    for (const node of noteNodes) {
+        node.cfg = node.cfg || {};
+        if (node.cfg.pos) continue;
+        noteBottom -= V_SPACING + NOTE_DEFAULT_HEIGHT;
+        node.cfg.pos = {
+            x: START_X,
+            y: noteBottom,
+            width: NODE_WIDTH,
+            height: NOTE_DEFAULT_HEIGHT,
+        };
     }
 }

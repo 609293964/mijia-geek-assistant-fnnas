@@ -329,6 +329,7 @@ export class Agent {
         let thinkingText = '';
         const toolCalls: ToolCall[] = [];
         let currentToolCall: { toolCallId: string; tool: string; args: any; startedAt: number } | null = null;
+        let failureStage: 'session' | 'model' = 'session';
 
         try {
             // 确保 this.messages 与 sessionStore 一致
@@ -374,6 +375,7 @@ export class Agent {
                 }
             }
             // 创建模型实例
+            failureStage = 'model';
             const model = createModel(this.modelConfig);
 
             // 使用 Vercel AI SDK 的 streamText
@@ -491,7 +493,7 @@ export class Agent {
                         return;
 
                     case 'error':
-                        const streamError = chatFailure(chunk.error);
+                        const streamError = chatFailure(chunk.error, currentToolCall ? 'tool' : 'model');
                         console.error('[AgentError]', JSON.stringify({
                             event: 'stream_error', sessionId: this.sessionId,
                             toolCallId: currentToolCall?.toolCallId, tool: currentToolCall?.tool,
@@ -523,7 +525,7 @@ export class Agent {
             yield {type: 'error', error: incompleteError};
 
         } catch (error) {
-            const errorMessage = chatFailure(error);
+            const errorMessage = chatFailure(error, currentToolCall ? 'tool' : failureStage);
             console.error('[AgentError]', JSON.stringify({
                 event: 'run_error', sessionId: this.sessionId,
                 toolCallId: currentToolCall?.toolCallId, tool: currentToolCall?.tool,

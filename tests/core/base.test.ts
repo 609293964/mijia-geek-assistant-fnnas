@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Graph, GraphNode } from '../../src/core/types/graph';
-import { normalizeGraphNodeForWrite, validateGraph } from '../../src/core/tools/base';
+import { layoutNodes, normalizeGraphNodeForWrite, validateGraph } from '../../src/core/tools/base';
 
 function node(
     id: string,
@@ -203,4 +203,56 @@ test('写入前可从 timeout 自动补齐 statusLast 的卡片展示字段', ()
     ));
 
     assert.deepEqual(normalized.cfg, { name: 'statusLast', version: 1, unit: 'min', value: 2 });
+});
+
+function noteNode(id: string, text: string): GraphNode {
+    return {
+        id, type: 'nop',
+        cfg: { name: 'nop', version: 1, contents: [{ insert: text }] },
+        props: {}, inputs: {}, outputs: { output: [] },
+    };
+}
+
+test('备注节点与执行节点分开布局，且不移动执行节点', () => {
+    const flow = [node('load', 'onLoad', {}, { output: ['set.input'] }), node('set', 'varSetNumber', { input: null }, { output: [] })];
+    const annotated = structuredClone(flow);
+    const first = noteNode('first', '用途');
+    const second = noteNode('second', '说明');
+    layoutNodes(flow);
+    layoutNodes([first, ...annotated, second]);
+    assert.deepEqual(annotated, flow);
+    const firstPos = first.cfg.pos as { y: number; height: number };
+    const secondPos = second.cfg.pos as { y: number; height: number };
+    assert.ok(firstPos.y + firstPos.height < (flow[0].cfg.pos as { y: number }).y);
+    assert.ok(secondPos.y + secondPos.height < firstPos.y);
+});
+
+test('已有备注保留尺寸和正文，新备注位于其上方', () => {
+    const existing = noteNode('existing', '保留');
+    existing.cfg.pos = { x: -100, y: -900, width: 700, height: 600 };
+    const original = structuredClone(existing);
+    const added = noteNode('added', '新增');
+    layoutNodes([existing, added]);
+    assert.deepEqual(existing, original);
+    assert.ok((added.cfg.pos as { y: number; height: number }).y + 400 < -900);
+});
+
+test('备注只允许独立存在；空正文只提示警告', () => {
+    const valid = noteNode('note', '说明');
+    assert.deepEqual(validateGraph(graph([valid])), []);
+    const incoming = graph([node('load', 'onLoad', {}, { output: ['note.input'] }), { ...valid, inputs: { input: null } }]);
+    assert.ok(validateGraph(incoming).some((error) => error.type === 'nop_has_incoming' && error.level === 'error'));
+    assert.ok(validateGraph(incoming).some((error) => error.type === 'nop_has_inputs' && error.level === 'error'));
+    const outgoing = graph([{ ...valid, outputs: { output: ['set.input'] } }, node('set', 'varSetNumber', { input: null }, { output: [] })]);
+    assert.ok(validateGraph(outgoing).some((error) => error.type === 'nop_has_outputs' && error.level === 'error'));
+    const empty = noteNode('empty', '   ');
+    assert.ok(validateGraph(graph([empty])).some((error) => error.type === 'nop_empty' && error.level === 'warn'));
+});
+
+test('备注兼容旧版纯文本和富文本 insert', () => {
+    const note = noteNode('note', '');
+    note.cfg.contents = '旧版文本';
+    assert.deepEqual(validateGraph(graph([note])), []);
+    note.cfg.contents = [null, { insert: { image: 'placeholder' } }, { insert: '富文本' }];
+    assert.deepEqual(validateGraph(graph([note])), []);
 });

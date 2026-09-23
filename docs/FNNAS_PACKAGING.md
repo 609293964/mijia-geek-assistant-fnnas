@@ -27,6 +27,7 @@ The packer is built into the project and writes normalized Linux permissions and
 - `package.json` is the version source. Keep `package-lock.json` in sync; `prepare:fpk` updates both manifests and `pack:fpk` writes `fnnas.mijia-geek-ai_<version>_x86.fpk`.
 - The device-usage Skill reference is included under `server/.agents/` in `app.tgz` for runtime lookup.
 - Local tests and FPK validation do not establish a successful real fnOS installation. After installing on a NAS, verify the displayed version, startup, retained settings and the new query tool.
+- Subsequent upstream PR #22/#23 adaptations separate annotation layout from executable nodes and buffer authentication frames from connection startup. The fork keeps its Chinese authentication diagnostics. These changes require real fnOS/gateway verification after local tests.
 
 ### Paths and Configuration
 

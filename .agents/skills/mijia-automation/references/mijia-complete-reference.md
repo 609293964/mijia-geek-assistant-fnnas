@@ -1096,8 +1096,8 @@ deviceInput → condition1
   "cfg": {
     "name": "nop",
     "version": 1,
-    "pos": {"x": 100, "y": 100, "width": 528, "height": 200},
-    "contents": "这是备注内容",
+    "pos": {"x": 100, "y": -380, "width": 528, "height": 400},
+    "contents": [{"insert": "这是备注内容"}],
     "background": "blue"
   },
   "props": {},
@@ -1106,7 +1106,7 @@ deviceInput → condition1
 }
 ```
 
-纯 UI 备注节点，不影响流程。
+纯 UI 备注节点，不影响流程。`cfg.contents` 兼容旧版纯文本和富文本 `insert` 数组；正文为空仅警告。备注节点不得有输入或连向下游，也不得被执行节点连接。自动布局时备注与执行流程分开，新备注放在流程上方；已有 `cfg.pos` 的尺寸和位置保留。此行为适配上游 PR #22，经过本地结构与布局测试，尚未在 fnOS 实机验证。
 
 ---
 

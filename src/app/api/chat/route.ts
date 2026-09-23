@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
         const agent = new Agent(gateway, config);
 
         // 如果有 sessionId，加载历史
+        stage = 'session';
         if (sessionId) {
             await agent.loadSession(sessionId);
         } else {
@@ -110,7 +111,7 @@ export async function POST(request: NextRequest) {
                     controller.enqueue(encoder.encode('data: [DONE]\n\n'));
                     controller.close();
                 } catch (error) {
-                    const errorMessage = chatFailure(error);
+                    const errorMessage = chatFailure(error, 'model');
                     log('error', errorMessage);
                     const errorOutput = {type: 'error', error: errorMessage, requestId};
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorOutput)}\n\n`));
@@ -130,7 +131,7 @@ export async function POST(request: NextRequest) {
         });
 
     } catch (error) {
-        const errorMessage = chatFailure(error);
+        const errorMessage = chatFailure(error, stage === 'configuration' ? 'configuration' : stage === 'session' ? 'session' : 'input');
         log('error', errorMessage);
         return new Response(
             JSON.stringify({error: errorMessage, requestId}),
