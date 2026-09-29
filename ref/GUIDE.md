@@ -22,7 +22,7 @@
 ### 网关连接
 
 - **协议**: WebSocket + ECJPAKE 加密
-- **默认地址**: `ws://192.168.0.5:80/centrallinkws/`
+- **默认地址**: `ws://192.0.2.1:80/centrallinkws/`
 - **认证方式**: 6 位数字登录码（每次连接生成）
 
 ### 数据格式
@@ -38,7 +38,7 @@
 ### 完整流程
 
 ```
-1. WebSocket 连接: ws://192.168.0.5:80/centrallinkws/
+1. WebSocket 连接: ws://192.0.2.1:80/centrallinkws/
 2. 协议协商: ["passcode"]
 3. ECJPAKE Round One (客户端 → 服务器)
 4. ECJPAKE Round One (服务器 → 客户端)
@@ -1705,7 +1705,7 @@ async function getDeviceCapabilities(client, did) {
 // 使用示例
 async function main() {
   const client = new GatewayClient();
-  await client.connect('http://192.168.0.5');
+  await client.connect('http://192.0.2.1');
   await client.authenticate('123456');
   
   const devices = await client.callApi('getDevList');
@@ -1793,7 +1793,7 @@ node gateway_client.js --cached
 
 ### 默认配置
 
-- 默认网关地址: `http://192.168.0.5`
+- 默认网关地址: `http://192.0.2.1`
 
 ---
 

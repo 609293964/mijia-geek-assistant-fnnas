@@ -3,7 +3,7 @@ name: mijia-automation
 description: 米家自动化极客版规则与变量管理指南。当用户想要创建智能场景、设备联动、定时任务、条件触发，或创建、读取、修改、删除自动化变量时使用此 Skill。
 metadata:
   author: mijia-geek-ai
-  version: "3.9"
+  version: "3.10"
 ---
 
 # 米家自动化规则创建
@@ -16,6 +16,8 @@ metadata:
 
 | 问题 | 模式 |
 |---|---|
+| 需要把生活需求拆成事件/状态/查询，并决定是否需要状态、桥接和恢复 | `PAT-DESIGN-01` |
+| 需要控制规则复杂度、判断重入、拆分规则或做创建前质量审计 | `PAT-QUALITY-01` |
 | 需要跨事件记住值、模式或时间点 | `PAT-STATE-01` |
 | 需要手动开灯常亮、自动开灯自动关（手动优先） | `PAT-STATE-02` |
 | 需要计算、映射、取整、量化或夹紧 | `PAT-NUM-01` |
@@ -27,15 +29,17 @@ metadata:
 
 常见组合：节律照明 = `TIME + NUM + LOOP`；外部可改档设备 = `STATE + SYNC`；重复提醒 = `STATE + LOOP + ADAPT`。
 
-模式用于选择结构和发现风险，不是固定模板。组合模式后仍须根据目标设备 MIOT Spec 重新确定 DID、URN、字段、量程、步进、枚举和动作参数。不得照抄案例中的设备、阈值、变量名或私有标识。
+模式用于选择结构和发现风险，不是固定模板。组合模式后仍须根据目标设备 MIOT Spec 重新确定 DID、URN、字段、量程、步进、枚举和动作参数。不得照抄案例中的设备、阈值、变量名、私有标识或完整拓扑。
+
+遇到开放式需求、复杂联动或“规则为什么不触发”时，先读取 `references/patterns/design-principles.md` 和 `references/patterns/quality-gates.md`，再按索引读取一至三个具体模式。它们沉淀的是决策方法和质量门，不是可直接复制的规则模板。
 
 案例知识按以下状态升级：
 
 ```text
-video → ui-sample → graph-diff → local-tested → gateway-roundtrip → runtime-verified → reusable-pattern
+public-article/video → ui-sample → graph-diff → local-tested → gateway-roundtrip → runtime-verified → reusable-pattern
 ```
 
-视频案例只是设计线索。未达到 `runtime-verified` 的行为不得写成强制校验规则；达到 `reusable-pattern` 还必须满足脱敏、跨场景适用和边界明确，才可作为通用模式推荐。证据可从真实规则、源码或网关样本开始，不要求机械经过每一级。
+公开文章和视频案例只是设计线索。未达到 `runtime-verified` 的行为不得写成强制校验规则；达到 `reusable-pattern` 还必须满足脱敏、跨场景适用和边界明确，才可作为通用模式推荐。证据可从真实规则、源码或网关样本开始，不要求机械经过每一级。
 
 完整节点字段按需读取 [米家自动化规则完全参考](references/mijia-complete-reference.md)，不要把全部节点模板和全部案例同时加载。
 
@@ -132,7 +136,7 @@ video → ui-sample → graph-diff → local-tested → gateway-roundtrip → ru
 12. **硬件原生时长与量程对齐**：设备 MIOT Spec 包含可通知的原生持续时长属性（如 `no_motion_duration`）且用户需求符合量程（如分钟级）时，必须优先采用原生属性；原生属性能精确表达时，禁止再增加同一意图的 `statusLast`。若用户需求为秒级（如 5s/10s/30s）而设备仅支持分钟级，才采用 `statusLast` 并主动向用户说明
 13. **delay 与 statusLast 语义隔离**：`delay` 仅用于动作发生后的无条件延时等待（如开灯后延时 5 秒关灯），不可用于状态持续判定
 14. **端口与信号语义必须匹配**：`deviceOutput` 只能声明 `inputs: {"trigger": null}`；事件源之间的“任一触发”必须使用 `signalOr`，`logicOr`/`logicAnd`/`logicNot` 只接收状态条件，不能把 `deviceInput.output` 直接接到逻辑状态节点；`statusLast.input` 必须有真实状态来源
-15. **statusLast 卡片字段必须完整**：除 `props.timeout`（运行时毫秒）外，必须填写 `cfg.unit` 与 `cfg.value`，且换算后必须等于 `props.timeout`；创建器可从 timeout 自动补齐，但不能覆盖用户明确填写的不一致值
+15. **时间卡片字段必须完整**：`delay`、`statusLast`、`eventSequence` 的 `props.timeout` 是运行时毫秒值；创建器会在写入前补齐 `cfg.unit` 与 `cfg.value`，也会把完整的卡片单位和值反向换算成 `props.timeout`。两者同时存在时换算结果必须完全相等，不能覆盖用户明确填写的不一致值。`statusLast` 缺少有效展示字段会拒绝创建，避免极客版卡片显示空数值
 
 ## inputs/outputs 工作机制
 
@@ -175,13 +179,16 @@ video → ui-sample → graph-diff → local-tested → gateway-roundtrip → ru
 当用户要求创建/修改自动化规则时，按以下步骤执行：
 
 1. **理解需求**：分析用户的自动化逻辑，确定需要哪些节点
-2. **先写设计表**：列出业务触发、持续状态、true/false/unknown 分支、变量及初值、状态转换、循环启停、恢复动作、失败行为和所选模式
-3. **生成节点列表**：按照节点模板和连接规则构建 nodes 数组；超过 10 个节点时先列出事件边和状态边两张连接清单
-4. **调用能力校验**：MCP 使用 `mijia_validate_graph_capabilities`，Web Agent 使用 `validate_graph_capabilities`，确认设备字段、权限、类型、范围、动作参数和变量引用
-5. **调用结构校验**：MCP 使用 `mijia_validate_graph`，Web Agent 使用 `validate_graph`，检查连接完整性
-6. **修复错误**：任一校验器报告 error 时修复并重新校验，直到全部通过
-7. **调用 create_graph 或 update_graph**：两项校验通过后调用创建/更新工具；工具内部仍会再次校验
-8. **确认结果**：回读规则并确认启用状态、变量作用域和关键节点
+2. **读取当前状态**：修改已有规则时先回读规则 ID、名称、启用状态、完整节点图、变量依赖和关键连线；创建新规则也要明确目标名称和默认启用策略
+3. **先写设计表**：列出业务触发、持续状态、true/false/unknown 分支、变量及初值、状态转换、循环启停、恢复动作、失败行为和所选模式
+4. **生成候选图**：按照节点模板和连接规则构建 nodes 数组；超过 10 个节点时先列出事件边和状态边两张连接清单。候选图基于当前快照生成，不直接修改真实规则
+   - 默认优先最小可执行图；超过 8 个流程节点、2 个状态变量、1 个 loop 或 2 层条件分支时，先做复杂度审计，能拆分就按独立意图拆分
+   - 对每个新增变量、查询、延时、循环和分支写明必要性、重入行为、停止条件和恢复路径
+5. **调用能力校验**：MCP 使用 `mijia_validate_graph_capabilities`，Web Agent 使用 `validate_graph_capabilities`，确认设备字段、权限、类型、范围、动作参数和变量引用
+6. **调用结构校验**：MCP 使用 `mijia_validate_graph`，Web Agent 使用 `validate_graph`，检查连接完整性
+7. **修复错误**：任一校验器报告 error 时修复并重新校验，直到全部通过
+8. **调用 create_graph 或 update_graph**：两项校验通过后调用创建/更新工具；工具内部仍会再次校验。创建工具只接受完整节点对象，不要提交缺少 `cfg/props/inputs/outputs` 的草稿节点
+9. **确认结果**：创建或更新后必须回读规则并确认启用状态、节点连接、变量作用域和关键数值字段；更新已有规则时比较写入前后快照。若网关回读缺失或不一致，只能报告“已提交但未确认”，不能自动重复写入
 
 写操作必须串行：候选图 → 能力校验 → 结构校验 → 一次写入 → 回读确认。若返回“写入结果未确认”，先回读并比较，不得自动并行或重复写入。
 

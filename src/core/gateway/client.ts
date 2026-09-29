@@ -283,6 +283,8 @@ class ECJPAKE {
 }
 
 export class GatewayClient {
+    private static readonly keepAliveIntervalMs = 30000;
+    private static readonly keepAliveMissLimit = 2;
     private ws: WebSocket | null = null;
     private sessionIdCounter = 0;
     private pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -293,6 +295,8 @@ export class GatewayClient {
     private cipherIn: AESGCMCipher | null = null;
     private secureEstablished = false;
     private connected = false;
+    private keepAliveTimer: NodeJS.Timeout | null = null;
+    private missedPongs = 0;
 
     private static parseUrl(url: string): string {
         const match = url.match(/^(https?):\/\/([^/:]+)(?::(\d+))?((?:\/.*)?)/);
@@ -317,8 +321,11 @@ export class GatewayClient {
                 if (this.ws !== ws) return;
                 this.connected = false;
                 this.secureEstablished = false;
+                this.stopKeepAlive();
                 this.handshakeError = error;
                 this.handshakeFrames = [];
+                for (const pending of this.pendingRequests.values()) pending.reject(error);
+                this.pendingRequests.clear();
                 for (const waiter of this.handshakeWaiters.splice(0)) {
                     clearTimeout(waiter.timer);
                     waiter.reject(error);
@@ -431,6 +438,38 @@ export class GatewayClient {
         }
 
         this.startReceiveLoop();
+        this.startKeepAlive();
+    }
+
+    /**
+     * Keep the gateway-side WebSocket alive while the browser is closed.
+     * The gateway connection belongs to this Node process, not to a browser tab.
+     */
+    private startKeepAlive(): void {
+        const ws = this.ws;
+        if (!ws) return;
+        this.stopKeepAlive();
+        this.missedPongs = 0;
+        ws.on('pong', () => {
+            if (this.ws === ws) this.missedPongs = 0;
+        });
+        this.keepAliveTimer = setInterval(() => {
+            if (this.ws !== ws || !this.secureEstablished || ws.readyState !== WebSocket.OPEN) return;
+            if (this.missedPongs >= GatewayClient.keepAliveMissLimit) {
+                this.missedPongs = 0;
+                ws.terminate();
+                return;
+            }
+            this.missedPongs += 1;
+            ws.ping();
+        }, GatewayClient.keepAliveIntervalMs);
+        this.keepAliveTimer.unref?.();
+    }
+
+    private stopKeepAlive(): void {
+        if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
+        this.keepAliveTimer = null;
+        this.missedPongs = 0;
     }
 
     private startReceiveLoop(): void {
@@ -467,7 +506,7 @@ export class GatewayClient {
     }
 
     async callApi<T = unknown>(method: string, params: Record<string, unknown> = {}, timeout: number = 5000): Promise<T> {
-        if (!this.secureEstablished) {
+        if (!this.secureEstablished || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
             throw new Error('Secure Session not established');
         }
 
@@ -491,7 +530,13 @@ export class GatewayClient {
             const message = Buffer.alloc(1 + encrypted.length);
             message[0] = DATA_TYPE.DATA;
             encrypted.copy(message, 1);
-            this.ws!.send(message);
+            try {
+                this.ws!.send(message);
+            } catch (error) {
+                this.pendingRequests.delete(requestId);
+                reject(error instanceof Error ? error : new Error('Gateway send failed'));
+                return;
+            }
 
             setTimeout(() => {
                 if (this.pendingRequests.has(requestId)) {
@@ -509,6 +554,7 @@ export class GatewayClient {
     async close(): Promise<void> {
         this.connected = false;
         this.secureEstablished = false;
+        this.stopKeepAlive();
         this.cipherIn = null;
         this.cipherOut = null;
         this.handshakeFrames = [];
@@ -517,6 +563,8 @@ export class GatewayClient {
             clearTimeout(waiter.timer);
             waiter.reject(this.handshakeError);
         }
+        for (const pending of this.pendingRequests.values()) pending.reject(this.handshakeError);
+        this.pendingRequests.clear();
         if (this.ws) {
             this.ws.close();
             this.ws = null;

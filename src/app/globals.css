@@ -305,6 +305,114 @@ a:hover {
     background: var(--bg-glass-light);
 }
 
+.chat-sender.ant-sender {
+    background: var(--chat-input-bg);
+    border-color: var(--chat-input-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--chat-subtle-shadow);
+}
+
+.chat-sender.ant-sender:hover,
+.chat-sender.ant-sender:focus-within {
+    border-color: var(--chat-input-focus);
+}
+
+.chat-sender .ant-sender-content,
+.chat-sender textarea {
+    color: var(--text-primary);
+}
+
+.chat-sender .ant-sender-actions-btn:not(:disabled) {
+    color: var(--chat-send-text);
+    background: var(--chat-send-bg);
+}
+
+.chat-prompts {
+    width: min(100%, 520px);
+    margin: 0 auto;
+    text-align: left;
+}
+
+.chat-prompts .ant-prompts-item {
+    background: var(--chat-assistant-bubble);
+    border-color: var(--chat-assistant-border);
+}
+
+.chat-prompts .ant-prompts-item:hover {
+    background: var(--chat-accent-soft);
+    border-color: var(--chat-input-focus);
+}
+
+.chat-input-prompts {
+    margin: 0 0 8px;
+}
+
+.chat-input-prompts .ant-prompts-item {
+    min-height: 30px;
+    padding: 4px 10px;
+    background: transparent;
+    border-color: var(--chat-input-border);
+}
+
+.chat-input-prompts .ant-prompts-item-description {
+    display: none;
+}
+
+.chat-message-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin: 4px 0 0 2px;
+}
+
+.chat-message-actions .ant-btn {
+    height: 26px;
+    padding: 0 7px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.chat-message-actions .ant-btn:hover {
+    color: var(--chat-accent);
+    background: var(--chat-accent-soft);
+}
+
+.chat-safety-hint {
+    display: block;
+    margin: 8px 4px 0;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.chat-edit-notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 2px 8px;
+    padding: 7px 10px;
+    color: var(--warning-text);
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-radius: var(--radius-md);
+    font-size: 12px;
+}
+
+.chat-jump-bottom.ant-btn {
+    position: sticky;
+    z-index: 3;
+    bottom: 4px;
+    left: 50%;
+    display: flex;
+    margin: 0 auto;
+    color: var(--text-primary);
+    background: var(--message-bg);
+    border-color: var(--chat-input-border);
+    box-shadow: var(--shadow-md);
+    transform: translateX(-50%);
+}
+
 .chat-input.ant-input {
     background: var(--chat-input-bg) !important;
     border-color: var(--chat-input-border) !important;

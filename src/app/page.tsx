@@ -1,6 +1,6 @@
 'use client';
 
-import React, {useState, useCallback, useRef} from 'react';
+import React, {useState, useCallback, useEffect, useRef} from 'react';
 import {Layout, Typography, Space, message, Tabs} from 'antd';
 import {RobotOutlined, HomeOutlined, ApartmentOutlined, ApiOutlined} from '@ant-design/icons';
 import Chat from '@/components/Chat';
@@ -42,7 +42,8 @@ interface GraphSummary {
 export default function HomePage() {
     const [collapsed, setCollapsed] = useState(false);
     const [isLoggedIn, setIsLoggedIn] = useState(false);
-    const [passcode, setPasscode] = useState('');
+    const [authChecked, setAuthChecked] = useState(false);
+    const [reconnecting, setReconnecting] = useState(false);
     const [devicesLoading, setDevicesLoading] = useState(false);
     const [devices, setDevices] = useState<any[]>([]);
     const [stats, setStats] = useState({total: 0, online: 0, offline: 0, rooms: 0});
@@ -105,11 +106,35 @@ export default function HomePage() {
         }
     }, []);
 
-    const handleLoginSuccess = async (code: string) => {
-        setPasscode(code);
+    const handleLoginSuccess = async () => {
+        setReconnecting(false);
         setIsLoggedIn(true);
         await Promise.all([loadDevices(), loadSessions()]);
     };
+
+    useEffect(() => {
+        let active = true;
+        const restoreConnection = async () => {
+            try {
+                const response = await fetch('/api/auth/status', {cache: 'no-store'});
+                const result = await response.json();
+                if (active && result.success && result.connected) {
+                    setIsLoggedIn(true);
+                    await Promise.all([loadDevices(), loadSessions()]);
+                } else if (active && result.success && result.reconnecting) {
+                    setReconnecting(true);
+                }
+            } catch {
+                // The login page remains available when the status probe fails.
+            } finally {
+                if (active) setAuthChecked(true);
+            }
+        };
+        restoreConnection();
+        return () => {
+            active = false;
+        };
+    }, [loadDevices, loadSessions]);
 
     const handleSelectSession = async (sessionId: string) => {
         setActiveSessionId(sessionId);
@@ -141,6 +166,27 @@ export default function HomePage() {
         }
     };
 
+    const handleRenameSession = async (sessionId: string, title: string): Promise<boolean> => {
+        try {
+            const response = await fetch(`/api/sessions/${sessionId}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title}),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                message.error(result.error || '重命名失败');
+                return false;
+            }
+            setSessions(prev => prev.map(session => session.id === sessionId ? {...session, title} : session));
+            message.success('对话已重命名');
+            return true;
+        } catch (error) {
+            message.error('重命名失败: ' + String(error));
+            return false;
+        }
+    };
+
     const handleNewSession = () => {
         setActiveSessionId(undefined);
         setCurrentMessages([]);
@@ -152,22 +198,28 @@ export default function HomePage() {
         loadSessions();
     };
 
-    const handleResetSession = useCallback(async (sessionId: string, seq: number) => {
+    const handleForkSession = useCallback(async (sessionId: string, seq: number): Promise<{sessionId: string; messages: SessionMessage[]} | null> => {
         try {
             const response = await fetch(`/api/sessions/${sessionId}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({action: 'truncate', seq}),
+                body: JSON.stringify({action: 'fork', seq}),
             });
             const result = await response.json();
-            if (result.success) {
-                setCurrentMessages(result.messages || []);
-                message.success('已回退到指定位置，修改消息后重新发送即可');
+            if (result.success && result.session?.id) {
+                const branchMessages = result.messages || [];
+                setActiveSessionId(result.session.id);
+                setCurrentMessages(branchMessages);
+                setSessions(prev => [result.session, ...prev.filter(session => session.id !== result.session.id)]);
+                message.success('已创建对话分支，原对话保持不变');
+                return {sessionId: result.session.id, messages: branchMessages};
             } else {
-                message.error(result.error || '回退失败');
+                message.error(result.error || '创建分支失败');
+                return null;
             }
         } catch (error) {
-            message.error('回退失败: ' + String(error));
+            message.error('创建分支失败: ' + String(error));
+            return null;
         }
     }, []);
 
@@ -216,8 +268,12 @@ export default function HomePage() {
         }
     };
 
+    if (!authChecked) {
+        return <div style={{padding: 32, textAlign: 'center'}}>正在检查网关连接...</div>;
+    }
+
     if (!isLoggedIn) {
-        return <LoginPage onLoginSuccess={handleLoginSuccess}/>;
+        return <LoginPage onLoginSuccess={handleLoginSuccess} reconnecting={reconnecting}/>;
     }
 
     return (
@@ -338,11 +394,10 @@ export default function HomePage() {
                             }}
                         >
                             <Chat
-                                passcode={passcode}
                                 sessionId={activeSessionId}
                                 initialMessages={currentMessages}
                                 onSessionCreated={handleSessionCreated}
-                                onResetSession={handleResetSession}
+                                onForkSession={handleForkSession}
                                 onGraphChanged={handleGraphChanged}
                             />
                         </div>
@@ -362,6 +417,7 @@ export default function HomePage() {
                                 loading={sessionsLoading}
                                 onSelectSession={handleSelectSession}
                                 onDeleteSession={handleDeleteSession}
+                                onRenameSession={handleRenameSession}
                                 onNewSession={handleNewSession}
                                 onRefresh={loadSessions}
                             />

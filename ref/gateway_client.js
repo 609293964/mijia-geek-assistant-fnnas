@@ -534,7 +534,7 @@ class GatewayClient {
 // ==================== 主函数 ====================
 async function main() {
     const passcode = process.argv[2];
-    const gatewayUrl = process.argv[3] || 'http://192.168.0.5';
+    const gatewayUrl = process.argv[3] || 'http://192.0.2.1';
     
     // 缓存文件路径
     const cacheDir = path.join(__dirname, 'cache');

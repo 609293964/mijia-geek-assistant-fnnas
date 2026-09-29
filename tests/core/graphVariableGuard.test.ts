@@ -42,14 +42,17 @@ test('创建规则时拒绝未登记变量且不调用 setGraph', async () => {
     const result = await createGraph(gateway, {
         name: 'Variable Guard',
         enable: false,
-        nodes: [{
-            id: 'set1',
-            type: 'varSetNumber',
-            cfg: { name: 'varSetNumber', version: 1 },
-            props: { id: 'missing', scope: 'global', elements: [{ type: 'const', value: '1' }] },
-            inputs: { input: null },
-            outputs: { output: [] },
-        }],
+        nodes: [
+            {id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: ['set1.input']}},
+            {
+                id: 'set1',
+                type: 'varSetNumber',
+                cfg: { name: 'varSetNumber', version: 1 },
+                props: { id: 'missing', scope: 'global', elements: [{ type: 'const', value: '1' }] },
+                inputs: { input: null },
+                outputs: { output: [] },
+            },
+        ],
     });
 
     assert.equal(result.success, false);
@@ -106,6 +109,67 @@ test('创建规则自动补齐 statusLast 的 UI 维持时间字段', async () =
         value: 30,
         pos: savedHold.cfg.pos,
     });
+});
+
+test('创建规则写入后回读完整图并确认关键内容', async () => {
+    let saved: any;
+    const gateway = {
+        async callApi(method: string, input: any): Promise<unknown> {
+            if (method === 'getGraphList') return [];
+            if (method === 'getVarScopeList') return {scopes: []};
+            if (method === 'setGraph') saved = structuredClone(input);
+            if (method === 'getGraph') return saved;
+            return undefined;
+        },
+    } as unknown as GatewayClient;
+
+    const result = await createGraph(gateway, {
+        name: 'Readback Graph',
+        enable: false,
+        nodes: [{id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: []}}],
+    });
+
+    assert.equal(result.success, true);
+    assert.match(result.success ? result.message || '' : '', /已回读确认/);
+});
+
+test('创建规则回读节点不一致时不报告成功，也不自动重复写入', async () => {
+    const calls: string[] = [];
+    const gateway = {
+        async callApi(method: string, input: any): Promise<unknown> {
+            calls.push(method);
+            if (method === 'getGraphList') return [];
+            if (method === 'getVarScopeList') return {scopes: []};
+            if (method === 'setGraph') return undefined;
+            if (method === 'getGraph') {
+                return {
+                    id: input.id,
+                    nodes: [{id: 'different', type: 'onLoad', cfg: {name: 'onLoad', version: 1}, props: {}, inputs: {}, outputs: {output: []}}],
+                    cfg: {
+                        id: input.id,
+                        enable: false,
+                        uiType: 'graph',
+                        userData: {
+                            name: '其他图',
+                            lastUpdateTime: 1,
+                            transform: {x: 0, y: 0, scale: 1, rotate: 0},
+                        },
+                    },
+                };
+            }
+            throw new Error(`意外的方法 ${method}`);
+        },
+    } as unknown as GatewayClient;
+
+    const result = await createGraph(gateway, {
+        name: 'Readback Mismatch',
+        enable: false,
+        nodes: [{id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: []}}],
+    });
+
+    assert.equal(result.success, false);
+    assert.match('error' in result ? result.error : '', /创建结果未确认/);
+    assert.equal(calls.filter((method) => method === 'setGraph').length, 1);
 });
 
 test('指定规则 ID 的完整图已存在时校正规则配置且不重复创建', async () => {
@@ -355,11 +419,14 @@ test('创建规则一次登记本规则变量并替换 rule 作用域', async ()
         name: 'One Call Variables',
         enable: false,
         variables: [{ id: 'result', type: 'number', value: 0, name: 'Result' }],
-        nodes: [{
-            id: 'calc', type: 'varSetNumber', cfg: {},
-            props: { id: 'result', scope: 'rule', elements: [{ type: 'const', value: '1' }] },
-            inputs: { input: null }, outputs: { output: [] },
-        }],
+        nodes: [
+            {id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: ['calc.input']}},
+            {
+                id: 'calc', type: 'varSetNumber', cfg: {},
+                props: { id: 'result', scope: 'rule', elements: [{ type: 'const', value: '1' }] },
+                inputs: { input: null }, outputs: { output: [] },
+            },
+        ],
     });
 
     assert.equal(result.success, true);
@@ -369,7 +436,7 @@ test('创建规则一次登记本规则变量并替换 rule 作用域', async ()
         scope: `R${graphId}`, id: 'result', type: 'number', value: 0, userData: { name: 'Result' },
     });
     const saved = calls.filter((call) => call.method === 'setGraph').at(-1)!.input;
-    assert.equal(saved.nodes[0].props.scope, `R${graphId}`);
+    assert.equal(saved.nodes.find((node: any) => node.id === 'calc').props.scope, `R${graphId}`);
 });
 
 test('本规则变量创建后校验失败会清理变量和规则外壳', async () => {
@@ -386,11 +453,14 @@ test('本规则变量创建后校验失败会清理变量和规则外壳', async
         name: 'Rollback Variables',
         enable: false,
         variables: [{ id: 'result', type: 'number', value: 0 }],
-        nodes: [{
-            id: 'calc', type: 'varSetNumber', cfg: {},
-            props: { id: 'missing', scope: 'rule', elements: [{ type: 'const', value: '1' }] },
-            inputs: { input: null }, outputs: { output: [] },
-        }],
+        nodes: [
+            {id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: ['calc.input']}},
+            {
+                id: 'calc', type: 'varSetNumber', cfg: {},
+                props: { id: 'missing', scope: 'rule', elements: [{ type: 'const', value: '1' }] },
+                inputs: { input: null }, outputs: { output: [] },
+            },
+        ],
     });
 
     assert.equal(result.success, false);
@@ -462,7 +532,10 @@ test('规则回滚删除失败时保留变量并报告可能残留', async () =>
     const result = await createGraph(gateway, {
         name: 'Rollback Failure', enable: false,
         variables: [{ id: 'result', type: 'number', value: 0 }],
-        nodes: [{ id: 'calc', type: 'varSetNumber', cfg: {}, props: { id: 'result', scope: 'rule', elements: [{ type: 'const', value: '1' }] }, inputs: { input: null }, outputs: { output: [] } }],
+        nodes: [
+            {id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: ['calc.input']}},
+            {id: 'calc', type: 'varSetNumber', cfg: {}, props: { id: 'result', scope: 'rule', elements: [{ type: 'const', value: '1' }] }, inputs: { input: null }, outputs: { output: [] }},
+        ],
     });
 
     assert.equal(result.success, false);
@@ -489,7 +562,10 @@ test('规则回滚删除响应丢失但回读已删除时继续清理作用域',
     const result = await createGraph(gateway, {
         name: 'Rollback Confirmed', enable: false,
         variables: [{ id: 'result', type: 'number', value: 0 }],
-        nodes: [{ id: 'calc', type: 'varSetNumber', cfg: {}, props: { id: 'result', scope: 'rule', elements: [{ type: 'const', value: '1' }] }, inputs: { input: null }, outputs: { output: [] } }],
+        nodes: [
+            {id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: ['calc.input']}},
+            {id: 'calc', type: 'varSetNumber', cfg: {}, props: { id: 'result', scope: 'rule', elements: [{ type: 'const', value: '1' }] }, inputs: { input: null }, outputs: { output: [] }},
+        ],
     });
 
     assert.equal(result.success, false);
@@ -509,11 +585,14 @@ test('更新规则遇到未登记变量时不调用 setGraph', async () => {
     } as unknown as GatewayClient;
 
     const result = await updateGraph(gateway, '1', {
-        nodes: [{
-            id: 'calc', type: 'varSetNumber', cfg: {},
-            props: { id: 'missing', scope: 'R1', elements: [{ type: 'const', value: '1' }] },
-            inputs: { input: null }, outputs: { output: [] },
-        }],
+        nodes: [
+            {id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: ['calc.input']}},
+            {
+                id: 'calc', type: 'varSetNumber', cfg: {},
+                props: { id: 'missing', scope: 'R1', elements: [{ type: 'const', value: '1' }] },
+                inputs: { input: null }, outputs: { output: [] },
+            },
+        ],
     });
 
     assert.equal(result.success, false);

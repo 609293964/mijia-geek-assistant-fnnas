@@ -113,7 +113,10 @@ test('网页端 create_graph 透传本规则变量定义', async () => {
 
     const result = await tools.create_graph.execute({
         name: '网页端变量规则',
-        nodes: [{id: 'calc', type: 'varSetNumber', cfg: {}, props: {id: 'result', scope: 'rule', elements: [{type: 'const', value: '1'}]}, inputs: {input: null}, outputs: {output: []}}],
+        nodes: [
+            {id: 'start', type: 'onLoad', cfg: {}, props: {}, inputs: {}, outputs: {output: ['calc.input']}},
+            {id: 'calc', type: 'varSetNumber', cfg: {}, props: {id: 'result', scope: 'rule', elements: [{type: 'const', value: '1'}]}, inputs: {input: null}, outputs: {output: []}},
+        ],
         variables: [{id: 'result', type: 'number', value: 0, name: '结果'}],
         enable: false,
     });
@@ -121,5 +124,5 @@ test('网页端 create_graph 透传本规则变量定义', async () => {
     assert.equal(result.success, true);
     assert.equal(calls.some(call => call.method === 'createVar'), true);
     const saved = calls.filter(call => call.method === 'setGraph').at(-1)?.params;
-    assert.match(saved.nodes[0].props.scope, /^R\d{13}$/);
+    assert.match(saved.nodes.find((node: any) => node.id === 'calc').props.scope, /^R\d{13}$/);
 });

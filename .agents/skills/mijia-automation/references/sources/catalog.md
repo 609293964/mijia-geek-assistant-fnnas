@@ -16,6 +16,7 @@
 ```
 
 - `video` 仅表示来源已确认，不表示行为已被网关实测。
+- `public-article` 表示公开文章中的设计线索，不表示文章案例已在当前设备或当前固件上复现。
 - 只有达到 `runtime-verified` 且边界明确的结论，才允许升级为通用推荐模式。
 - 单一作者经验、设备私有枚举、固定阈值和家庭习惯不得直接泛化。
 - 页面标题、合集顺序和平台 AI 文稿可能后续变化；以来源 ID 与 URL 为追溯主键。
@@ -28,6 +29,24 @@
 | `SRC-BILI-EASY-BASIC` | 基础逻辑：为什么规则不执行、事件如何推动流程 | https://www.bilibili.com/video/BV1yM411c7nR/ | `PAT-SEM-01` 候选证据 |
 | `SRC-BILI-EASY-LOGIC` | 逻辑卡片、自定义状态与“为什么只能用一次” | https://www.bilibili.com/video/BV1je411S7vf/ | register/状态边沿候选证据 |
 | `SRC-BILI-EASY-EDGE` | 状态更新卡片的包含触发逻辑；原始值变化与谓词真假变化的区别 | https://www.bilibili.com/video/BV1by411B7Bs/ | `PAT-SEM-01` 重要候选证据 |
+
+## 公开文章：设计思路补充
+
+| 来源 ID | 主题 | URL | 当前用途 |
+|---|---|---|---|
+| `SRC-INKSS-GUIDE-001` | 卡片语义、事件与状态、状态维持、延时、循环、变量和虚拟事件桥接 | https://inkss.cn/post/78a787b3/ | `PAT-DESIGN-01` 设计线索，`public-article` |
+| `SRC-INKSS-CASES-001` | 状态生命周期、手动/自动来源、环境变化触发、全局模式和复杂案例拆解 | https://inkss.cn/post/430ddf15/ | `PAT-DESIGN-01` 设计线索，`public-article` |
+
+## 跨项目设计参考
+
+| 来源 ID | 主题 | URL | 当前用途 |
+|---|---|---|---|
+| `SRC-UPSTREAM-OH-MY-SAGE-001` | 上游米家 Skill 的渐进检索、能力映射、结构校验和证据升级 | https://github.com/allocnode/oh-my-sage/tree/main/.agents/skills/mijia-automation | `PAT-QUALITY-01` 方法参考，不复制实现 |
+| `SRC-HA-AUTOMATION-BASIC-001` | 触发、条件、动作的自动化职责分层与触发来源标识 | https://www.home-assistant.io/docs/automation/basics/ | `PAT-QUALITY-01` 跨平台设计参考 |
+| `SRC-HA-AUTOMATION-MODE-001` | 重复触发时的 single/restart/queued/parallel 分类 | https://www.home-assistant.io/docs/automation/modes/ | `PAT-QUALITY-01` 重入问题分类，不映射为米家能力 |
+| `SRC-NODERED-FLOW-STRUCTURE-001` | Flow/Context 作用域、可读性和跨 Flow 连接 | https://nodered.org/docs/developing-flows/flow-structure | `PAT-QUALITY-01` 状态范围参考 |
+| `SRC-NODERED-SUBFLOW-001` | 子流封装和复用以降低视觉复杂度 | https://nodered.org/docs/user-guide/editor/workspace/subflows | `PAT-QUALITY-01` 复用思路参考 |
+| `SRC-LIXINYU-MIJA-SKILLS-001` | 只读导出、克隆图试运行、保存后回读导出、变量清理和共享执行器设计 | https://github.com/lixinyu02/mijia-geek-automation-skills | `PAT-QUALITY-01`, `PAT-SEM-01`, `PAT-STATE-01` 的公开仓库参考；不复制浏览器注入、AppleScript 或编辑器私有 API |
 
 ## 我是你八哥啊：复杂自动化设计案例
 
@@ -69,6 +88,8 @@
 ## 与仓库知识层的映射
 
 - 事件、状态、查询、边沿：`../patterns/event-state-semantics.md`
+- 需求拆解、生命周期、手动优先、桥接和复杂度：`../patterns/design-principles.md`
+- 可用性、复杂度、重入和拆分质量门：`../patterns/quality-gates.md`
 - 状态、变量、手动优先：`../patterns/state-and-scope.md`
 - 模式归位与真实状态驱动：`../patterns/synchronization.md`、`../patterns/loops-and-lifecycle.md`
 - 占用持续与时间：`../patterns/time-and-duration.md`

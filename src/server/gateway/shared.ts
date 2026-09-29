@@ -4,7 +4,7 @@
  */
 
 import { GatewayClient } from '@/core/gateway/client';
-import { createGatewayManager, type GatewayManager } from '@/core/gateway/manager';
+import { createGatewayManager, type GatewayConnectionStatus, type GatewayManager } from '@/core/gateway/manager';
 
 const globalKey = '__mijia_geek_ai_gateway_manager__';
 
@@ -35,4 +35,9 @@ export function getGateway(): GatewayClient | null {
 export function isGatewayConnected(): boolean {
     const manager = getGlobalManager();
     return manager?.isConnected() ?? false;
+}
+
+export function getGatewayStatus(): GatewayConnectionStatus {
+    const manager = getGlobalManager();
+    return manager?.getStatus() ?? {connected: false, reconnecting: false};
 }

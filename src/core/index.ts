@@ -15,7 +15,7 @@ export { getGraphs, getGraph, createGraph, updateGraph, deleteGraph, toggleGraph
 export { getVariables, setVariable, createVariable, deleteVariable, getVariableValue, getVariableConfig } from './tools/variable';
 export { callGatewayApi, READ_ONLY_GATEWAY_METHODS } from './tools/misc';
 export { validateGraphCapabilitiesWithGateway } from './tools/capabilityValidation';
-export { validateGraph, layoutNodes } from './tools/base';
+export { validateGraph, layoutNodes, normalizeGraphNodeForWrite, normalizeGraphNodesForWrite } from './tools/base';
 
 // 类型
 export type {

@@ -29,6 +29,9 @@
 
 | 案例组 | 主要来源 | 关联模式 | 当前状态 | 需要继续验证的边界 |
 |---|---|---|---|---|
+| 事件状态拆解与复杂场景设计 | `SRC-INKSS-GUIDE-001`, `SRC-INKSS-CASES-001` | `PAT-DESIGN-01`, `PAT-SEM-01`, `PAT-STATE-01`, `PAT-ADAPT-01` | public-article | 文章案例中的设备能力、阈值、拓扑和重入行为不得直接泛化；需按目标设备重新校验 |
+| 可用性质量门与复杂度控制 | `SRC-UPSTREAM-OH-MY-SAGE-001`, `SRC-HA-AUTOMATION-BASIC-001`, `SRC-HA-AUTOMATION-MODE-001`, `SRC-NODERED-FLOW-STRUCTURE-001`, `SRC-NODERED-SUBFLOW-001` | `PAT-QUALITY-01` | public-reference | 其他平台的重入模式、Context 和 Subflow 不能直接当作米家网关能力；只借鉴设计问题分类 |
+| 只读导出、克隆试运行与保存后复核 | `SRC-LIXINYU-MIJA-SKILLS-001` | `PAT-QUALITY-01`, `PAT-SEM-01`, `PAT-STATE-01` | public-reference | 导出格式、编辑器对象和脚本入口依赖本地网页版本；当前项目只吸收前后状态快照、差异核对和变量依赖审计思路 |
 | 事件、状态、查询与状态更新边沿 | `SRC-BILI-EASY-BASIC`, `SRC-BILI-EASY-LOGIC`, `SRC-BILI-EASY-EDGE` | `PAT-SEM-01` | video | 不同节点/固件的边沿触发、一致值重复上报、UNKNOWN |
 | 自定义状态锁存与重新武装 | `SRC-BILI-BUG-STATE`, `SRC-BILI-EASY-LOGIC` | `PAT-SEM-01`, `PAT-STATE-01` | video | register 重启初值、重复 setTrue/setFalse、并发置位 |
 | 人体事件模拟持续有人 | `SRC-BILI-BUG-OCC` | `PAT-STATE-01`, `PAT-TIME-01` | video | 快速进出、重复上报、网关重启、无人事件丢失 |

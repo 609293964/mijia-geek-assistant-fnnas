@@ -28,6 +28,24 @@ const INDEXED_INPUT_TYPES = new Set(['signalOr', 'logicOr', 'logicAnd']);
 /** 画布备注不参与规则执行流程。 */
 const ANNOTATION_NODE_TYPES = new Set(['nop']);
 
+/** 这些节点都以 props.timeout 作为运行时毫秒值。 */
+const TIMEOUT_NODE_TYPES = new Set(['delay', 'statusLast', 'eventSequence']);
+
+/** 需要声明的输入端口；创建/更新时还会检查这些端口是否有上游来源。 */
+const REQUIRED_INPUT_PORTS: Record<string, string[]> = {
+    deviceGet: ['input'],
+    deviceGetSetVar: ['input'],
+    deviceOutput: ['trigger'],
+    delay: ['input'],
+    statusLast: ['input'],
+    eventSequence: ['input1', 'input2'],
+    condition: ['trigger', 'condition'],
+    varGet: ['input'],
+    varSetNumber: ['input'],
+    varSetString: ['input'],
+    loop: ['start', 'stop'],
+};
+
 function annotationText(node: GraphNode): string {
     const contents = node.cfg?.contents;
     if (typeof contents === 'string') return contents;
@@ -146,31 +164,51 @@ function validateIndexedInputs(node: GraphNode, errors: ValidationError[]): void
 /**
  * 补齐网关 UI 所需的可推导展示字段。
  *
- * statusLast 的 props.timeout 是运行时毫秒值，cfg.unit/cfg.value 是极客版
+ * 时间节点的 props.timeout 是运行时毫秒值，cfg.unit/cfg.value 是极客版
  * 卡片显示值。只在字段完全缺失，或已明确 unit 但缺少 value 时补齐；
  * 用户明确填写的值不在这里静默覆盖，交给 validateGraph 报出不一致。
  */
 export function normalizeGraphNodeForWrite(node: GraphNode): GraphNode {
-    if (node.type !== 'statusLast') return node;
+    if (!TIMEOUT_NODE_TYPES.has(node.type)) return node;
 
-    const props = node.props || {};
-    const timeout = props.timeout;
-    if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout <= 0) return node;
-
+    const props = { ...(node.props || {}) };
     const cfg = { ...(node.cfg || {}) };
-    const hasUnit = cfg.unit !== undefined;
-    const hasValue = cfg.value !== undefined;
-    if (!hasUnit && !hasValue) {
-        Object.assign(cfg, preferredDurationDisplay(timeout));
-    } else if (hasUnit && !hasValue) {
-        const unit = durationUnitMs(cfg.unit);
-        if (unit && timeout % unit === 0) cfg.value = timeout / unit;
+    const rawTimeout = props.timeout;
+    const unit = durationUnitMs(cfg.unit);
+    const value = cfg.value;
+    const hasDisplay = unit !== undefined
+        && typeof value === 'number'
+        && Number.isFinite(value)
+        && value > 0;
+
+    // 兼容模型只填写 cfg.unit/cfg.value 的情况，先补齐运行时字段。
+    if ((rawTimeout === undefined || rawTimeout === null) && hasDisplay) {
+        const timeout = value * unit;
+        if (Number.isInteger(timeout) && timeout > 0) props.timeout = timeout;
     }
 
-    return { ...node, cfg };
+    const timeout = props.timeout;
+    if (typeof timeout === 'number' && Number.isInteger(timeout) && timeout > 0) {
+        const hasUnit = cfg.unit !== undefined;
+        const hasValue = cfg.value !== undefined;
+        if (!hasUnit && !hasValue) {
+            Object.assign(cfg, preferredDurationDisplay(timeout));
+        } else if (hasUnit && !hasValue) {
+            const displayUnit = durationUnitMs(cfg.unit);
+            if (displayUnit && timeout % displayUnit === 0) cfg.value = timeout / displayUnit;
+        } else if (!hasUnit && hasValue && typeof cfg.value === 'number' && Number.isFinite(cfg.value) && cfg.value > 0) {
+            Object.assign(cfg, preferredDurationDisplay(timeout));
+        }
+    }
+
+    return { ...node, cfg, props };
 }
 
-export function validateGraph(graph: Graph): ValidationError[] {
+export function normalizeGraphNodesForWrite(nodes: GraphNode[]): GraphNode[] {
+    return nodes.map(normalizeGraphNodeForWrite);
+}
+
+export function validateGraph(graph: Graph, options: {requireInputSources?: boolean} = {}): ValidationError[] {
     const errors: ValidationError[] = [];
     const nodeMap = new Map<string, GraphNode>();
 
@@ -252,6 +290,25 @@ export function validateGraph(graph: Graph): ValidationError[] {
             }
         }
 
+        const requiredInputs = REQUIRED_INPUT_PORTS[node.type] || [];
+        for (const input of requiredInputs) {
+            if (!Object.prototype.hasOwnProperty.call(node.inputs || {}, input)) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'missing_input_port',
+                    level: 'error',
+                    message: `${node.type} 必须声明 inputs.${input}`,
+                });
+            } else if (node.inputs?.[input] !== null) {
+                errors.push({
+                    nodeId: node.id,
+                    type: 'input_port_not_null',
+                    level: 'error',
+                    message: `${node.type}.inputs.${input} 必须为 null`,
+                });
+            }
+        }
+
         if (STATE_NODE_TYPES.has(node.type) && Object.keys(node.inputs || {}).length > 0) {
             errors.push({ nodeId: node.id, type: 'state_has_inputs', level: 'error', message: `${node.type} 是 state 节点，inputs 必须为 {}` });
         }
@@ -314,7 +371,21 @@ export function validateGraph(graph: Graph): ValidationError[] {
             });
         }
 
-        if (node.type === 'statusLast') {
+        if (options.requireInputSources) {
+            for (const input of REQUIRED_INPUT_PORTS[node.type] || []) {
+                if (Object.prototype.hasOwnProperty.call(node.inputs || {}, input)
+                    && (!incoming.has(`${node.id}.${input}`) || incoming.get(`${node.id}.${input}`)!.size === 0)) {
+                    errors.push({
+                        nodeId: node.id,
+                        type: 'missing_input_source',
+                        level: 'error',
+                        message: `${node.type} "${node.id}" 的 ${input} 无上游来源，规则不会按预期运行`,
+                    });
+                }
+            }
+        }
+
+        if (TIMEOUT_NODE_TYPES.has(node.type)) {
             const props = node.props || {};
             const cfg = node.cfg || {};
             const timeout = props.timeout;
@@ -323,24 +394,33 @@ export function validateGraph(graph: Graph): ValidationError[] {
             if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout <= 0) {
                 errors.push({
                     nodeId: node.id,
-                    type: 'status_last_invalid_timeout',
+                    type: node.type === 'statusLast' ? 'status_last_invalid_timeout' : 'invalid_timeout',
                     level: 'error',
-                    message: 'statusLast.props.timeout 必须是大于 0 的整数毫秒数',
+                    message: `${node.type}.props.timeout 必须是大于 0 的整数毫秒数`,
                 });
             }
             if (unit === undefined || typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-                errors.push({
-                    nodeId: node.id,
-                    type: 'status_last_missing_display',
-                    level: 'error',
-                    message: 'statusLast.cfg 必须声明有效的 unit 和 value，供极客版卡片显示维持时间',
-                });
+                if (node.type === 'statusLast') {
+                    errors.push({
+                        nodeId: node.id,
+                        type: 'status_last_missing_display',
+                        level: 'error',
+                        message: 'statusLast.cfg 必须声明有效的 unit 和 value，供极客版卡片显示维持时间',
+                    });
+                } else {
+                    errors.push({
+                        nodeId: node.id,
+                        type: 'duration_missing_display',
+                        level: 'error',
+                        message: `${node.type}.cfg 建议声明 unit 和 value，避免极客版卡片数值为空`,
+                    });
+                }
             } else if (typeof timeout === 'number' && Number.isFinite(timeout) && value * unit !== timeout) {
                 errors.push({
                     nodeId: node.id,
-                    type: 'status_last_display_mismatch',
+                    type: node.type === 'statusLast' ? 'status_last_display_mismatch' : 'duration_display_mismatch',
                     level: 'error',
-                    message: `statusLast.cfg.value × unit 必须等于 props.timeout（当前 ${value} × ${cfg.unit} ≠ ${timeout}ms）`,
+                    message: `${node.type}.cfg.value × unit 必须等于 props.timeout（当前 ${value} × ${cfg.unit} ≠ ${timeout}ms）`,
                 });
             }
         }
@@ -370,6 +450,20 @@ export function validateGraph(graph: Graph): ValidationError[] {
                     level: 'error',
                     message: 'deviceOutput.inputs.trigger 必须为 null',
                 });
+            }
+        }
+
+        if (node.type === 'condition') {
+            for (const output of ['met', 'unmet']) {
+                if (!Object.prototype.hasOwnProperty.call(node.outputs || {}, output)
+                    || !Array.isArray(node.outputs?.[output])) {
+                    errors.push({
+                        nodeId: node.id,
+                        type: 'condition_missing_output',
+                        level: 'error',
+                        message: `condition 必须声明 outputs.${output} 数组，未满足和满足分支都要明确`,
+                    });
+                }
             }
         }
 

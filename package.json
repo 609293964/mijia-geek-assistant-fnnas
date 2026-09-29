@@ -1,12 +1,13 @@
 {
   "name": "mijia-geek-ai",
-  "version": "0.0.9",
+  "version": "0.0.15",
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/build-next.mjs",
+    "version:fpk": "node scripts/bump-version.mjs",
     "prepare:fpk": "node scripts/prepare-fpk.mjs",
     "pack:fpk": "node scripts/pack-fpk.mjs",
-    "build:fpk": "node scripts/build-next.mjs && node scripts/prepare-fpk.mjs && node scripts/pack-fpk.mjs",
+    "build:fpk": "node scripts/bump-version.mjs && node scripts/build-next.mjs && node scripts/prepare-fpk.mjs && node scripts/pack-fpk.mjs",
     "start": "next start",
     "lint": "next lint",
     "test": "npx tsx src/test.ts",
@@ -18,6 +19,7 @@
     "@ai-sdk/ui-utils": "^0.0.50",
     "@ant-design/cssinjs": "^1.24.0",
     "@ant-design/icons": "^5.4.0",
+    "@ant-design/x": "1.6.0",
     "ai": "^3.4.0",
     "antd": "^5.21.0",
     "bn.js": "^5.2.1",

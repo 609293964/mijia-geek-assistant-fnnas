@@ -17,6 +17,10 @@ export interface SessionMeta {
     updatedAt: string;
     messageCount: number;
     isActive: boolean;
+    /** Existing sessions do not have these fields. A branch is an independent session. */
+    parentSessionId?: string;
+    rootSessionId?: string;
+    forkSeq?: number;
 }
 
 /**
@@ -139,6 +143,39 @@ export class SessionStore {
         this.writeIndex(index);
 
         return meta;
+    }
+
+    /** Copy history before a user turn into a new session; the source remains unchanged. */
+    async forkSession(sourceId: string, userSeq: number): Promise<{session: SessionMeta; messages: SessionMessage[]}> {
+        const source = await this.getSessionMeta(sourceId);
+        if (!source) throw new Error('原对话不存在');
+        const allMessages = await this.getMessages(sourceId);
+        const sourceMessage = allMessages.find(item => item.seq === userSeq);
+        if (!Number.isSafeInteger(userSeq) || userSeq < 0 || sourceMessage?.role !== 'user') {
+            throw new Error('只能从有效的用户消息创建分支');
+        }
+
+        const messages = allMessages.slice(0, userSeq);
+        const now = new Date().toISOString();
+        const session: SessionMeta = {
+            id: this.generateId(),
+            title: `${source.title.slice(0, 65)} · 分支`,
+            summary: [...messages].reverse().find(item => item.role === 'user')?.content.slice(0, 100) || '',
+            createdAt: now,
+            updatedAt: now,
+            messageCount: messages.length,
+            isActive: true,
+            parentSessionId: source.id,
+            rootSessionId: source.rootSessionId || source.id,
+            forkSeq: userSeq,
+        };
+        const content = messages.map(item => JSON.stringify(item)).join('\n') + (messages.length ? '\n' : '');
+        fs.writeFileSync(this.getSessionPath(session.id), content, {flag: 'wx', mode: 0o600});
+
+        const index = this.readIndex();
+        index.sessions.unshift(session);
+        this.writeIndex(index);
+        return {session, messages};
     }
 
     /**

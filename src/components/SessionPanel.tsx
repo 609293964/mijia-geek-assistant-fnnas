@@ -1,11 +1,12 @@
 'use client';
 
-import React from 'react';
-import {Typography, Button, Empty, Spin, Space, Popconfirm} from 'antd';
+import React, {useMemo, useState} from 'react';
+import {Typography, Button, Spin, Space, Popconfirm, Input, message} from 'antd';
 import {
     SyncOutlined, MessageOutlined, DeleteOutlined,
-    ClockCircleOutlined, PlusOutlined, HistoryOutlined,
+    ClockCircleOutlined, PlusOutlined, HistoryOutlined, SearchOutlined, EditOutlined, CheckOutlined, CloseOutlined,
 } from '@ant-design/icons';
+import {matchesSession} from '@/lib/chat-workspace';
 
 const {Text} = Typography;
 
@@ -25,6 +26,7 @@ interface SessionPanelProps {
     loading?: boolean;
     onSelectSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
+    onRenameSession: (sessionId: string, title: string) => Promise<boolean>;
     onNewSession: () => void;
     onRefresh: () => void;
 }
@@ -48,8 +50,31 @@ function formatTime(isoString: string): string {
 
 export default function SessionPanel({
                                          sessions, activeSessionId, loading = false,
-                                         onSelectSession, onDeleteSession, onNewSession, onRefresh,
+                                         onSelectSession, onDeleteSession, onRenameSession, onNewSession, onRefresh,
                                      }: SessionPanelProps) {
+    const [query, setQuery] = useState('');
+    const [editingId, setEditingId] = useState<string>();
+    const [draftTitle, setDraftTitle] = useState('');
+    const [renaming, setRenaming] = useState(false);
+    const filteredSessions = useMemo(
+        () => sessions.filter(session => matchesSession(session, query)),
+        [query, sessions],
+    );
+
+    const submitRename = async (sessionId: string) => {
+        const title = draftTitle.trim();
+        if (!title) {
+            message.warning('对话名称不能为空');
+            return;
+        }
+        setRenaming(true);
+        try {
+            if (await onRenameSession(sessionId, title)) setEditingId(undefined);
+        } finally {
+            setRenaming(false);
+        }
+    };
+
     return (
         <div style={{height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column'}}>
             {/* 头部 */}
@@ -87,6 +112,15 @@ export default function SessionPanel({
                         />
                     </Space>
                 </div>
+                <Input
+                    allowClear
+                    value={query}
+                    onChange={event => setQuery(event.target.value)}
+                    prefix={<SearchOutlined/>}
+                    placeholder="搜索标题或摘要"
+                    aria-label="搜索对话历史"
+                    style={{marginTop: 12}}
+                />
             </div>
 
             {/* Session 列表 */}
@@ -100,8 +134,13 @@ export default function SessionPanel({
                         <MessageOutlined style={{fontSize: 28, color: 'var(--text-muted)', marginBottom: 12}}/>
                         <Text style={{display: 'block', color: 'var(--text-muted)', fontSize: 13}}>暂无对话历史</Text>
                     </div>
+                ) : filteredSessions.length === 0 ? (
+                    <div style={{textAlign: 'center', padding: '40px 20px'}}>
+                        <SearchOutlined style={{fontSize: 28, color: 'var(--text-muted)', marginBottom: 12}}/>
+                        <Text style={{display: 'block', color: 'var(--text-muted)', fontSize: 13}}>没有匹配的对话</Text>
+                    </div>
                 ) : (
-                    sessions.map(session => {
+                    filteredSessions.map(session => {
                         const isActive = session.id === activeSessionId;
                         return (
                             <div
@@ -134,15 +173,41 @@ export default function SessionPanel({
 
                                 <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start'}}>
                                     <div style={{flex: 1, minWidth: 0}}>
-                                        <Text strong style={{
-                                            fontSize: 13,
-                                            color: isActive ? 'var(--text-bright)' : 'var(--text-primary)',
-                                            display: 'block',
-                                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                            marginBottom: 2,
-                                        }}>
-                                            {session.title || '新对话'}
-                                        </Text>
+                                        {editingId === session.id ? (
+                                            <Space.Compact style={{width: '100%', marginBottom: 5}} onClick={event => event.stopPropagation()}>
+                                                <Input
+                                                    autoFocus
+                                                    maxLength={80}
+                                                    value={draftTitle}
+                                                    disabled={renaming}
+                                                    onChange={event => setDraftTitle(event.target.value)}
+                                                    onPressEnter={() => submitRename(session.id)}
+                                                    aria-label="新对话名称"
+                                                />
+                                                <Button
+                                                    icon={<CheckOutlined/>}
+                                                    loading={renaming}
+                                                    onClick={() => submitRename(session.id)}
+                                                    aria-label="保存对话名称"
+                                                />
+                                                <Button
+                                                    icon={<CloseOutlined/>}
+                                                    disabled={renaming}
+                                                    onClick={() => setEditingId(undefined)}
+                                                    aria-label="取消重命名"
+                                                />
+                                            </Space.Compact>
+                                        ) : (
+                                            <Text strong style={{
+                                                fontSize: 13,
+                                                color: isActive ? 'var(--text-bright)' : 'var(--text-primary)',
+                                                display: 'block',
+                                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                                marginBottom: 2,
+                                            }}>
+                                                {session.title || '新对话'}
+                                            </Text>
+                                        )}
 
                                         {session.summary && (
                                             <Text style={{
@@ -168,6 +233,17 @@ export default function SessionPanel({
                                         </div>
                                     </div>
 
+                                    <Space size={0} onClick={event => event.stopPropagation()}>
+                                    <Button
+                                        type="text" size="small"
+                                        icon={<EditOutlined/>}
+                                        aria-label="重命名对话"
+                                        onClick={() => {
+                                            setEditingId(session.id);
+                                            setDraftTitle(session.title || '新对话');
+                                        }}
+                                        style={{color: 'var(--text-muted)'}}
+                                    />
                                     <Popconfirm
                                         title="确定删除？"
                                         onConfirm={(e) => {
@@ -190,6 +266,7 @@ export default function SessionPanel({
                                             onMouseLeave={(e) => e.currentTarget.style.opacity = '0.5'}
                                         />
                                     </Popconfirm>
+                                    </Space>
                                 </div>
                             </div>
                         );

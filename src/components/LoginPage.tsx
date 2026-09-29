@@ -1,36 +1,21 @@
 'use client';
 
-import React, {useState, useCallback, useEffect, useRef} from 'react';
-import {Input, Button, message, Modal, Space, Tooltip, Typography} from 'antd';
-import {LockOutlined, ReloadOutlined, SettingOutlined, ThunderboltFilled} from '@ant-design/icons';
-import PasscodeCapturePanel, {
-    PasscodeCapturePanelHandle,
-    PasscodeCapturePanelState,
-} from '@/components/PasscodeCapturePanel';
+import React, {useState, useCallback, useRef} from 'react';
+import {Input, Button, message, Typography} from 'antd';
+import {LockOutlined, ThunderboltFilled} from '@ant-design/icons';
 import ThemeToggle from '@/components/ThemeToggle';
 
 const {Text} = Typography;
 
 interface LoginPageProps {
-    onLoginSuccess: (passcode: string) => void;
+    onLoginSuccess: () => void;
+    reconnecting?: boolean;
 }
 
-export default function LoginPage({onLoginSuccess}: LoginPageProps) {
+export default function LoginPage({onLoginSuccess, reconnecting = false}: LoginPageProps) {
     const [passcode, setPasscode] = useState('');
     const [loading, setLoading] = useState(false);
-    const [mounted, setMounted] = useState(false);
-    const [settingsOpen, setSettingsOpen] = useState(false);
-    const [passcodePanelState, setPasscodePanelState] = useState<PasscodeCapturePanelState>({
-        canRefresh: false,
-        fetching: false,
-        hydrated: false,
-    });
     const isLoggingRef = useRef(false);
-    const passcodePanelRef = useRef<PasscodeCapturePanelHandle>(null);
-
-    useEffect(() => {
-        setMounted(true);
-    }, []);
 
     const doLogin = useCallback(async (code: string) => {
         if (code.length !== 6 || isLoggingRef.current) return;
@@ -45,7 +30,7 @@ export default function LoginPage({onLoginSuccess}: LoginPageProps) {
             const result = await response.json();
             if (result.success) {
                 message.success('连接成功');
-                onLoginSuccess(code);
+                onLoginSuccess();
             } else {
                 message.error(result.message || '连接失败');
                 isLoggingRef.current = false;
@@ -66,56 +51,11 @@ export default function LoginPage({onLoginSuccess}: LoginPageProps) {
         }
     };
 
-    const handlePasscodeFetched = useCallback((code: string) => {
-        const value = code.replace(/\D/g, '').slice(0, 6);
-        setPasscode(value);
-    }, []);
-
-    const handlePasscodePanelStateChange = useCallback((state: PasscodeCapturePanelState) => {
-        setPasscodePanelState(state);
-    }, []);
-
-    const handleRefreshPasscode = useCallback(() => {
-        if (!passcodePanelRef.current) {
-            message.warning('验证码设置正在加载，请稍后重试');
-            return;
-        }
-        passcodePanelRef.current.refreshPasscode();
-    }, []);
-
     return (
         <div className="login-page">
             <div className="login-top-actions">
-                <Tooltip title="验证码设置">
-                    <Button
-                        className="login-settings-button"
-                        shape="circle"
-                        icon={<SettingOutlined/>}
-                        onClick={() => setSettingsOpen(true)}
-                        aria-label="验证码设置"
-                    />
-                </Tooltip>
                 <ThemeToggle/>
             </div>
-
-            {mounted && (
-                <Modal
-                    title="验证码设置"
-                    open={settingsOpen}
-                    onCancel={() => setSettingsOpen(false)}
-                    footer={null}
-                    width={560}
-                    centered
-                    forceRender
-                >
-                    <PasscodeCapturePanel
-                        ref={passcodePanelRef}
-                        disabled={loading}
-                        onPasscodeFetched={handlePasscodeFetched}
-                        onStateChange={handlePasscodePanelStateChange}
-                    />
-                </Modal>
-            )}
 
             {/* 亮色主题主视觉 */}
             <div className="login-main-visual" aria-hidden="true">
@@ -157,36 +97,26 @@ export default function LoginPage({onLoginSuccess}: LoginPageProps) {
                 </h1>
 
                 <div style={{marginBottom: 20}}>
-                    <Space.Compact style={{width: '100%'}}>
-                        <Input
-                            prefix={<LockOutlined style={{color: 'var(--text-muted)'}}/>}
-                            placeholder="输入 6 位米家登录码"
-                            maxLength={6}
-                            size="large"
-                            value={passcode}
-                            onChange={handlePasscodeChange}
-                            disabled={loading}
-                            style={{
-                                textAlign: 'center',
-                                letterSpacing: 6,
-                                fontSize: 18,
-                                fontWeight: 600,
-                            }}
-                        />
-                        <Tooltip title={passcodePanelState.canRefresh ? '重新获取验证码' : '先在右上角设置验证码请求'}>
-                            <Button
-                                size="large"
-                                icon={<ReloadOutlined/>}
-                                loading={passcodePanelState.fetching}
-                                disabled={loading || !passcodePanelState.canRefresh}
-                                onClick={handleRefreshPasscode}
-                                aria-label="重新获取验证码"
-                                style={{width: 48}}
-                            />
-                        </Tooltip>
-                    </Space.Compact>
-                    <Text style={{color: 'var(--text-muted)', fontSize: 11, marginTop: 8, display: 'block'}}>
-                        输入 6 位后自动连接，刷新会自动填入验证码
+                    <Input
+                        prefix={<LockOutlined style={{color: 'var(--text-muted)'}}/>}
+                        placeholder="输入 6 位米家动态码"
+                        maxLength={6}
+                        size="large"
+                        value={passcode}
+                        onChange={handlePasscodeChange}
+                        onPressEnter={() => doLogin(passcode)}
+                        disabled={loading}
+                        style={{
+                            textAlign: 'center',
+                            letterSpacing: 6,
+                            fontSize: 18,
+                            fontWeight: 600,
+                        }}
+                    />
+                    <Text style={{color: reconnecting ? 'var(--warning-text)' : 'var(--text-muted)', fontSize: 11, marginTop: 8, display: 'block'}}>
+                        {reconnecting
+                            ? 'NAS 正在后台恢复已有网关连接，通常无需再次输入验证码；如恢复失败可输入新验证码。'
+                            : '输入 6 位动态码后由 NAS 后台建立长连接，关闭浏览器不会主动断开。'}
                     </Text>
                 </div>
 

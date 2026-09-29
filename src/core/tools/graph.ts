@@ -175,7 +175,7 @@ export async function createGraph(gateway: GatewayClient, input: CreateGraphInpu
             },
         };
 
-        const errors = validateGraph(graph);
+        const errors = validateGraph(graph, {requireInputSources: true});
         const errorList = errors.filter((e: { level: string }) => e.level === 'error');
         if (errorList.length > 0) {
             return {
@@ -239,7 +239,42 @@ export async function createGraph(gateway: GatewayClient, input: CreateGraphInpu
         if (!resumedExisting) shellCreatedHere = true;
         await gateway.callApi('setGraph', graph, 10000);
 
-        return { success: true, data: { graphId }, message: `规则 "${input.name}" 创建成功` };
+        // 指定 ID 且完整图已经存在时，前面的 getGraph 已经完成幂等性比对；
+        // 再次 setGraph 只是在补齐配置，不需要把同一份旧响应当成新的回读结果。
+        if (resumedExisting && !resumedShell) {
+            return { success: true, data: { graphId }, message: `规则 "${input.name}" 已存在并完成幂等校验` };
+        }
+
+        // setGraph 的响应本身不能证明网关最终保存了完整图；创建后立即回读，
+        // 发现差异时明确报告，避免 Agent 把一次“已提交”误报为可用规则。
+        try {
+            const savedGraph = await gateway.callApi<Graph>('getGraph', { id: graphId }, 10000);
+            const hasComparableConfig = savedGraph
+                && typeof savedGraph === 'object'
+                && Array.isArray(savedGraph.nodes)
+                && savedGraph.cfg
+                && typeof savedGraph.cfg === 'object'
+                && savedGraph.cfg.userData
+                && typeof savedGraph.cfg.userData === 'object';
+            if (hasComparableConfig) {
+                const verificationError = verifyUpdatedGraph(graph, savedGraph);
+                if (verificationError) {
+                    return {
+                        success: false,
+                        error: `规则已提交，但创建结果未确认：${verificationError}`,
+                    };
+                }
+                return { success: true, data: { graphId }, message: `规则 "${input.name}" 创建成功，已回读确认` };
+            }
+        } catch {
+            // 某些网关版本没有稳定返回 getGraph 结果；保留已提交规则，不重复写入。
+        }
+
+        return {
+            success: true,
+            data: { graphId },
+            message: `规则 "${input.name}" 已提交；网关未返回可比较的回读结果，请在规则列表核对后再启用`,
+        };
     } catch (error) {
         const cleanupErrors: string[] = [];
         if (shellCreatedHere) {
@@ -315,7 +350,7 @@ export async function updateGraph(gateway: GatewayClient, id: string, input: Upd
 
         // 无论更新的是节点、名称还是启用状态，都校验完整候选图。
         // 空图通过只代表没有设备引用可检查，不能据此跳过真实候选图的校验。
-        const errors = validateGraph(graph);
+        const errors = validateGraph(graph, {requireInputSources: true});
         const errorList = errors.filter((e: { level: string }) => e.level === 'error');
         if (errorList.length > 0) {
             return { success: false, error: `规则校验失败（${errorList.length} 个错误），请修复后重试` };

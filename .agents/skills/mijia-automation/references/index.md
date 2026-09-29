@@ -4,6 +4,8 @@
 
 | 需求 | 读取 |
 |---|---|
+| 把生活需求拆成事件/状态/查询、状态生命周期、手动优先、桥接适配和复杂度决策 | [patterns/design-principles.md](patterns/design-principles.md) |
+| 需要控制自动化复杂度、设计重入策略、拆分规则或做创建前质量审计 | [patterns/quality-gates.md](patterns/quality-gates.md) |
 | 事件/状态/查询的区别、condition 双输入、signalOr 与 logic、register、状态边沿与 UNKNOWN | [patterns/event-state-semantics.md](patterns/event-state-semantics.md) |
 | 节点字段、端口、完整 JSON 结构 | [mijia-complete-reference.md](mijia-complete-reference.md) |
 | 查询设备被哪些规则使用、排查残留引用与扫描不完整 | [device-usage.md](device-usage.md) |
@@ -25,6 +27,8 @@
 | ID | 模式 |
 |---|---|
 | `PAT-SEM-01` | 事件、状态、查询、condition、register 与状态边沿语义 |
+| `PAT-DESIGN-01` | 从生活需求到事件入口、状态生命周期、适配层和可验证规则 |
+| `PAT-QUALITY-01` | 可用性优先、复杂度预算、重入策略和创建前质量门 |
 | `PAT-STATE-01` | 本规则状态、全局状态与跨规则契约 |
 | `PAT-STATE-02` | 手动优先锁定与开灯来源追踪（自动开自动关，手动开常亮） |
 | `PAT-NUM-01` | 数值规范化、函数和量程转换 |
@@ -36,8 +40,8 @@
 
 ## 设计检索顺序
 
-1. 把需求拆成触发、状态、查询、变换、条件、动作、退出、恢复，并给关键边标记 `EVENT / STATE / QUERY`。
-2. 如果存在“为什么只触发一次”“状态更新”“自定义状态”“查询会不会触发”“任一事件/任一条件”等语义问题，先读 `PAT-SEM-01`。
+1. 先读 `PAT-DESIGN-01`，把需求拆成触发、状态、查询、变换、条件、动作、退出、恢复，并给关键边标记 `EVENT / STATE / QUERY`。
+2. 如果存在“为什么只触发一次”“状态更新”“自定义状态”“查询会不会触发”“任一事件/任一条件”等语义问题，再读 `PAT-SEM-01`。
 3. 再从上表选取一至三个业务模式文件。
 4. 检查是否需要局部变量、全局变量、register，或完全不需要额外状态。
 5. 读取目标设备 MIOT Spec，替换模式中的抽象属性和动作。
@@ -52,4 +56,5 @@
 - `cases/` 保存脱敏后的实际解法与关联模式。
 - `experiments/` 保存待验证命题和证据升级状态。
 - `patterns/` 只接收已经抽象、边界明确的跨案例知识。
+- `PAT-DESIGN-01` 只提供决策框架，不应因为文章案例而直接新增设备字段、固定阈值或强制拓扑。
 - 未达到相应证据等级的结论不得升级成强制 validator 规则。

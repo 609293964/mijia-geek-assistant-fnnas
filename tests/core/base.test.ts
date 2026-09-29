@@ -205,6 +205,57 @@ test('写入前可从 timeout 自动补齐 statusLast 的卡片展示字段', ()
     assert.deepEqual(normalized.cfg, { name: 'statusLast', version: 1, unit: 'min', value: 2 });
 });
 
+test('写入前统一补齐 delay 和 eventSequence 的卡片时长字段', () => {
+    const delay = normalizeGraphNodeForWrite(node(
+        'wait',
+        'delay',
+        { input: null },
+        { output: [] },
+        { timeout: 5000 },
+    ));
+    const sequence = normalizeGraphNodeForWrite(node(
+        'sequence',
+        'eventSequence',
+        { input1: null, input2: null },
+        { output: [] },
+        { timeout: 120000 },
+    ));
+
+    assert.deepEqual(delay.cfg, { name: 'delay', version: 1, unit: 's', value: 5 });
+    assert.deepEqual(sequence.cfg, { name: 'eventSequence', version: 1, unit: 'min', value: 2 });
+});
+
+test('卡片时长字段存在时可反向补齐运行时 timeout', () => {
+    const normalized = normalizeGraphNodeForWrite({
+        ...node('wait', 'delay', { input: null }, { output: [] }),
+        cfg: { name: 'delay', version: 1, unit: 'min', value: 2 },
+        props: {},
+    });
+
+    assert.equal(normalized.props.timeout, 120000);
+});
+
+test('时间节点的 timeout 必须是正整数，避免创建后卡片和运行时都为空', () => {
+    const invalid = graph([
+        node('start', 'onLoad', {}, { output: ['wait.input'] }),
+        node('wait', 'delay', { input: null }, { output: [] }, { timeout: 0 }),
+    ]);
+
+    assert.ok(validateGraph(invalid).some((error) => error.type === 'invalid_timeout' && error.level === 'error'));
+});
+
+test('condition 必须同时声明 met 和 unmet 输出端口', () => {
+    const invalid = graph([
+        node('start', 'onLoad', {}, { output: ['cond.trigger'] }),
+        node('range', 'timeRange', {}, { output: ['cond.condition'] }),
+        {
+            ...node('cond', 'condition', { trigger: null, condition: null }, { met: [] }),
+        },
+    ]);
+
+    assert.ok(validateGraph(invalid).some((error) => error.type === 'condition_missing_output' && error.level === 'error'));
+});
+
 function noteNode(id: string, text: string): GraphNode {
     return {
         id, type: 'nop',

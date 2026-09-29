@@ -27,6 +27,8 @@ yarn-error.log*
 .tmp-fpk-test/
 
 # Local env files and secrets
+*.env
+!*.env.example
 .env*
 !.env.example
 !.env.*.example
@@ -66,3 +68,5 @@ fnnas.mijia-geek-ai/*.fpk
 
 # OS
 Thumbs.db
+build-fpk.bat
+docs/FNNAS_PACKAGING.md

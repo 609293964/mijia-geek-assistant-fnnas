@@ -22,6 +22,7 @@ import {
     getVariables,
     getVariableValue,
     layoutNodes,
+    normalizeGraphNodesForWrite,
     setVariable,
     toggleGraph,
     updateGraph,
@@ -76,6 +77,15 @@ function defineTool<P extends z.Schema<any, z.ZodTypeDef, any>, RESULT>(config: 
         parameters: compatibleParameters(config.parameters),
     } as any);
 }
+
+const graphNodeSchema = z.object({
+    id: z.string().regex(/^[0-9a-zA-Z]+$/, '节点 ID 只能包含字母和数字'),
+    type: z.string().trim().min(1),
+    cfg: z.record(z.unknown()),
+    props: z.record(z.unknown()),
+    inputs: z.record(z.unknown()),
+    outputs: z.record(z.array(z.string())),
+});
 
 export function createCoreTools(gateway: GatewayClient) {
     return {
@@ -167,10 +177,10 @@ export function createCoreTools(gateway: GatewayClient) {
         }),
 
         create_graph: defineTool({
-            description: '创建新的自动化规则',
+            description: '创建新的自动化规则。只接受已经完成方案选择、设备能力校验和连接结构校验的最终图；不要把草稿、缺少输入来源的节点或未确认的设备参数直接写入。',
             parameters: z.object({
                 name: z.string().describe('规则名称'),
-                nodes: z.array(z.any()).describe('节点列表'),
+                nodes: z.array(graphNodeSchema).min(1).describe('最终节点列表；每个节点必须完整包含 cfg、props、inputs、outputs'),
                 variables: z.array(z.discriminatedUnion('type', [
                     z.object({id: z.string().regex(/^[a-zA-Z0-9]+$/), type: z.literal('number'), value: z.number(), name: z.string().trim().min(1).optional()}),
                     z.object({id: z.string().regex(/^[a-zA-Z0-9]+$/), type: z.literal('string'), value: z.string(), name: z.string().trim().min(1).optional()}),
@@ -205,11 +215,11 @@ export function createCoreTools(gateway: GatewayClient) {
         }),
 
         update_graph: defineTool({
-            description: '更新现有规则',
+            description: '更新现有规则。仅提交完整最终图；修改前必须读取原规则并重新进行能力校验和连接结构校验。',
             parameters: z.object({
                 id: z.string().describe('规则ID'),
                 name: z.string().optional().describe('新规则名称'),
-                nodes: z.array(z.any()).optional().describe('新节点列表'),
+                nodes: z.array(graphNodeSchema).min(1).optional().describe('完整新节点列表；每个节点必须包含 cfg、props、inputs、outputs'),
                 enable: z.boolean().optional().describe('是否启用'),
                 durationRequirement: z.object({
                     durationMs: z.number().int().positive(),
@@ -330,6 +340,8 @@ export function createCoreTools(gateway: GatewayClient) {
                 }).optional().describe('完整候选图的 cfg；仅结构预检时可省略'),
             }),
             execute: async ({nodes, cfg}) => {
+                const normalizedNodes = normalizeGraphNodesForWrite(nodes as any);
+                const normalized = JSON.stringify(normalizedNodes) !== JSON.stringify(nodes);
                 const resolvedCfg = cfg || {
                     id: 'validation-draft',
                     enable: false,
@@ -340,11 +352,16 @@ export function createCoreTools(gateway: GatewayClient) {
                         transform: {x: 0, y: 0, scale: 1, rotate: 0},
                     },
                 };
-                const graph = {id: resolvedCfg.id, nodes, cfg: resolvedCfg};
-                const errors = validateGraph(graph as any);
+                const graph = {id: resolvedCfg.id, nodes: normalizedNodes, cfg: resolvedCfg};
+                const errors = validateGraph(graph as any, {requireInputSources: true});
 
                 if (errors.length === 0) {
-                    return {success: true, valid: true, message: '规则校验通过'};
+                    return {
+                        success: true,
+                        valid: true,
+                        ...(normalized ? {nodes: normalizedNodes} : {}),
+                        message: '规则校验通过',
+                    };
                 }
 
                 const errorList = errors
@@ -359,6 +376,7 @@ export function createCoreTools(gateway: GatewayClient) {
                     valid: errorList.length === 0,
                     errors: errorList,
                     warnings: warnList,
+                    ...(normalized ? {nodes: normalizedNodes} : {}),
                     message: errorList.length > 0
                         ? `发现 ${errorList.length} 个错误，必须修复后才能创建规则`
                         : `校验通过（${warnList.length} 个警告）`,

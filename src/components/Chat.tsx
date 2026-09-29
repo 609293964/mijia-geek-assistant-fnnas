@@ -2,16 +2,16 @@
 /* eslint-disable @next/next/no-img-element -- 本地 Blob 预览不适合经 next/image 优化 */
 
 import React, {useState, useRef, useEffect, useCallback} from 'react';
-import {Input, Button, Space, Typography, Spin, message, Tag, Collapse, Tooltip} from 'antd';
-import {SendOutlined, LoadingOutlined, ToolOutlined, RobotOutlined, QuestionCircleOutlined, StopOutlined, RollbackOutlined, ThunderboltOutlined, CopyOutlined, CheckOutlined, PictureOutlined, CloseOutlined} from '@ant-design/icons';
+import {Button, Space, Typography, Spin, message, Tag, Collapse, Tooltip} from 'antd';
+import {Prompts, Sender} from '@ant-design/x';
+import {LoadingOutlined, ToolOutlined, RobotOutlined, QuestionCircleOutlined, RollbackOutlined, ThunderboltOutlined, CopyOutlined, CheckOutlined, PictureOutlined, CloseOutlined, DownloadOutlined, ArrowDownOutlined, BulbOutlined, SearchOutlined, SafetyCertificateOutlined, ReloadOutlined, EditOutlined, ReadOutlined} from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {extractSseData} from '@/lib/sse';
 import {chatCompletionError, chatFailure} from '@/lib/chat-diagnostics';
+import {exportConversation, isNearChatBottom, toolDisplayStatus} from '@/lib/chat-workspace';
 
 const {Text} = Typography;
-const {TextArea} = Input;
-
 interface AgentOutput {
     type: 'thinking' | 'tool_start' | 'tool_result' | 'complete' | 'waiting_input' | 'error';
     content?: string;
@@ -64,11 +64,10 @@ interface SessionMessage {
 }
 
 interface ChatProps {
-    passcode?: string;
     sessionId?: string;
     initialMessages?: SessionMessage[];
     onSessionCreated?: (sessionId: string, messages: SessionMessage[]) => void;
-    onResetSession?: (sessionId: string, seq: number) => Promise<void>;
+    onForkSession?: (sessionId: string, seq: number) => Promise<{sessionId: string; messages: SessionMessage[]} | null>;
     onGraphChanged?: () => void;
 }
 
@@ -79,6 +78,16 @@ const maxImageCount = 4;
 const maxImageBytes = 8 * 1024 * 1024;
 const maxTotalImageBytes = 20 * 1024 * 1024;
 const chatApiPath = '/api/chat';
+const quickPromptItems = [
+    {key: 'devices', icon: <SearchOutlined/>, label: '查看设备', description: '查询设备状态'},
+    {key: 'automation', icon: <BulbOutlined/>, label: '设计自动化', description: '先出方案再执行'},
+    {key: 'usage', icon: <SafetyCertificateOutlined/>, label: '检查规则引用', description: '查看设备影响'},
+];
+const quickPromptText: Record<string, string> = {
+    devices: '帮我查看设备状态',
+    automation: '帮我设计一个自动化规则，先给出方案，不要立即写入',
+    usage: '帮我检查设备被哪些自动化规则引用',
+};
 
 async function getChatRequestError(response: Response): Promise<string> {
     const contentType = response.headers.get('content-type') || '';
@@ -115,11 +124,10 @@ function extractTextOptions(content: string): string[] {
 }
 
 export default function Chat({
-                                 passcode: propPasscode,
                                  sessionId,
                                  initialMessages,
                                  onSessionCreated,
-                                 onResetSession,
+                                 onForkSession,
                                  onGraphChanged,
                              }: ChatProps = {}) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -133,15 +141,17 @@ export default function Chat({
     const [streamFinalContent, setStreamFinalContent] = useState('');
     const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
     const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+    const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+    const [isForking, setIsForking] = useState(false);
 
     const messagesContainerRef = useRef<HTMLDivElement>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
     const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const imageUrlsRef = useRef<Set<string>>(new Set());
-    const passcode = propPasscode || '';
     const prevSessionIdRef = useRef<string | undefined>(sessionId);
     const initializedRef = useRef(false);
+    const shouldFollowStreamRef = useRef(true);
 
     useEffect(() => {
         if (sessionId !== prevSessionIdRef.current) {
@@ -156,6 +166,7 @@ export default function Chat({
             setIsLoading(false);
             setCurrentSessionId(sessionId);
             setPendingImages([]);
+            setIsForking(false);
             imageUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
             imageUrlsRef.current.clear();
             prevSessionIdRef.current = sessionId;
@@ -194,11 +205,17 @@ export default function Chat({
         }
     }, [initialMessages, isLoading]);
 
+    const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+        const container = messagesContainerRef.current;
+        if (!container) return;
+        shouldFollowStreamRef.current = true;
+        setShowJumpToBottom(false);
+        container.scrollTo({top: container.scrollHeight, behavior});
+    }, []);
+
     useEffect(() => {
-        if (messagesContainerRef.current) {
-            messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-        }
-    }, [messages, streamThinking, streamToolCalls, streamFinalContent, waitingInput]);
+        if (shouldFollowStreamRef.current) scrollToBottom('auto');
+    }, [messages, streamThinking, streamToolCalls, streamFinalContent, waitingInput, scrollToBottom]);
 
     useEffect(() => {
         const imageUrls = imageUrlsRef.current;
@@ -325,6 +342,8 @@ export default function Chat({
         setPendingImages([]);
         setIsLoading(true);
         setWaitingInput(null);
+        shouldFollowStreamRef.current = true;
+        setShowJumpToBottom(false);
 
         let currentThinking = '';
         const currentToolCalls: DisplayToolCall[] = [];
@@ -345,7 +364,6 @@ export default function Chat({
             const formData = new FormData();
             formData.append('message', displayMessage);
             if (currentSessionId) formData.append('sessionId', currentSessionId);
-            if (passcode) formData.append('passcode', passcode);
             imageAttachments.forEach(image => formData.append('images', image.file, image.name));
 
             const response = await fetch(chatApiPath, {
@@ -515,20 +533,12 @@ export default function Chat({
             abortControllerRef.current = null;
             setIsLoading(false);
         }
-    }, [isLoading, passcode, currentSessionId, onSessionCreated, onGraphChanged]);
+    }, [isLoading, currentSessionId, onSessionCreated, onGraphChanged]);
 
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!input.trim() && pendingImages.length === 0) return;
+    const handleSubmit = async (value: string) => {
+        if (!value.trim() && pendingImages.length === 0) return;
         if (waitingInput) setWaitingInput(null);
-        sendMessage(input, pendingImages);
-    };
-
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            if ((input.trim() || pendingImages.length > 0) && !isLoading) handleSubmit(e as any);
-        }
+        sendMessage(value, pendingImages);
     };
 
     const handleStop = () => {
@@ -543,18 +553,33 @@ export default function Chat({
         setWaitingInput(null);
     };
 
-    const handleReset = useCallback(async (targetSeq: number, messageContent: string, images: PendingImage[] = []) => {
-        if (!currentSessionId || !onResetSession) return;
-        handleStop();
+    const handleEditDraft = useCallback(async (targetSeq: number, messageContent: string, images: PendingImage[] = []) => {
+        if (!currentSessionId || !onForkSession || isForking) return;
+        setIsForking(true);
         try {
-            // targetSeq - 1：删除选中的那条消息及其后续所有消息
-            await onResetSession(currentSessionId, targetSeq - 1);
+            const branch = await onForkSession(currentSessionId, targetSeq);
+            if (!branch) return;
             setInput(messageContent);
             setPendingImages(images);
-            initializedRef.current = false;
-        } catch (error) {
+            message.info('已创建独立分支；原对话仍保留，确认后发送新的问题。');
+        } finally {
+            setIsForking(false);
         }
-    }, [currentSessionId, onResetSession]);
+    }, [currentSessionId, isForking, onForkSession]);
+
+    const handleExport = useCallback(() => {
+        if (messages.length === 0) {
+            message.info('当前没有可导出的对话');
+            return;
+        }
+        const blob = new Blob([exportConversation(messages)], {type: 'text/markdown;charset=utf-8'});
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `mijia-chat-${new Date().toISOString().slice(0, 10)}.md`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+    }, [messages]);
 
     const renderMarkdown = (content: string) => {
         if (!content) return null;
@@ -567,6 +592,11 @@ export default function Chat({
     const renderAssistantMessage = (msg: ChatMessage) => {
         const toolCalls = msg.process?.toolCalls || [];
         const hasProcess = msg.process && (toolCalls.length > 0 || msg.process.thinking);
+        const messageIndex = messages.findIndex(item => item.id === msg.id);
+        const sourceUser = messageIndex > 0 && messages[messageIndex - 1]?.role === 'user'
+            ? messages[messageIndex - 1]
+            : undefined;
+        const canEditSource = sourceUser?.seq !== undefined && !isLoading && !isForking;
 
         return (
             <div key={msg.id} className="msg-enter" style={{marginBottom: 20, display: 'flex', gap: 10, alignItems: 'flex-start'}}>
@@ -588,9 +618,10 @@ export default function Chat({
                                 label: (
                                     <div style={{display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6}}>
                                         <span style={{fontSize: 12, color: 'var(--text-muted)'}}>执行过程</span>
-                                        {toolCalls.map((tc, i) => (
-                                            <Tag key={`${msg.id}-tc-${i}`} color={tc.success ? 'success' : 'error'}>{tc.tool}</Tag>
-                                        ))}
+                                        {toolCalls.map((tc, i) => {
+                                            const status = toolDisplayStatus(tc, false);
+                                            return <Tag key={`${msg.id}-tc-${i}`} color={status.color}>{tc.tool} · {status.label}</Tag>;
+                                        })}
                                     </div>
                                 ),
                                 children: (
@@ -615,8 +646,8 @@ export default function Chat({
                                                 <Space style={{marginBottom: 4}}>
                                                     <ToolOutlined style={{color: 'var(--accent)'}}/>
                                                     <Text strong style={{fontSize: 12, color: 'var(--text-bright)'}}>{tc.tool}</Text>
-                                                    <Tag color={tc.success ? 'success' : 'error'} style={{fontSize: 10}}>
-                                                        {tc.success ? '✓' : '✗'}
+                                                    <Tag color={toolDisplayStatus(tc, false).color} style={{fontSize: 10}}>
+                                                        {toolDisplayStatus(tc, false).label}
                                                     </Tag>
                                                     {typeof tc.durationMs === 'number' && (
                                                         <Text style={{fontSize: 10, color: 'var(--text-muted)'}}>{tc.durationMs} ms</Text>
@@ -663,6 +694,55 @@ export default function Chat({
                         }}>
                             <div className="markdown-content">{renderMarkdown(msg.content)}</div>
                             {renderCopyButton(msg.content, msg.id)}
+                        </div>
+                    )}
+                    {msg.content && !isLoading && (
+                        <div className="chat-message-actions" aria-label="回答操作">
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<CopyOutlined/>}
+                                onClick={() => copyToClipboard(msg.content, `${msg.id}-action-copy`)}
+                            >
+                                复制
+                            </Button>
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<ReloadOutlined/>}
+                                disabled={!canEditSource}
+                                onClick={() => {
+                                    if (sourceUser?.seq !== undefined) {
+                                        void handleEditDraft(sourceUser.seq, sourceUser.content, sourceUser.images);
+                                    }
+                                }}
+                            >
+                                重新回答
+                            </Button>
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<ReadOutlined/>}
+                                onClick={() => {
+                                    setInput('请继续说明上面的内容，并补充具体步骤。');
+                                    message.info('已放入输入框，确认后发送。');
+                                }}
+                            >
+                                继续说明
+                            </Button>
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<EditOutlined/>}
+                                disabled={!canEditSource}
+                                onClick={() => {
+                                    if (sourceUser?.seq !== undefined) {
+                                        void handleEditDraft(sourceUser.seq, sourceUser.content, sourceUser.images);
+                                    }
+                                }}
+                            >
+                                编辑后重发
+                            </Button>
                         </div>
                     )}
 
@@ -760,9 +840,10 @@ export default function Chat({
                                     <div style={{display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6}}>
                                         <Spin indicator={<LoadingOutlined style={{fontSize: 12, color: 'var(--accent)'}} spin/>}/>
                                         <span style={{fontSize: 12, color: 'var(--text-muted)'}}>执行中</span>
-                                        {toolCalls.map((tc, i) => (
-                                            <Tag key={i} color={tc.success ? 'success' : 'processing'}>{tc.tool}</Tag>
-                                        ))}
+                                        {toolCalls.map((tc, i) => {
+                                            const status = toolDisplayStatus(tc, true);
+                                            return <Tag key={i} color={status.color}>{tc.tool} · {status.label}</Tag>;
+                                        })}
                                     </div>
                                 ),
                                 children: (
@@ -787,8 +868,8 @@ export default function Chat({
                                                 <Space style={{marginBottom: 4}}>
                                                     <ToolOutlined style={{color: 'var(--accent)'}}/>
                                                     <Text strong style={{fontSize: 12, color: 'var(--text-bright)'}}>{tc.tool}</Text>
-                                                    <Tag color={tc.success ? 'success' : tc.result ? 'error' : 'processing'}>
-                                                        {tc.success ? '✓' : tc.result ? '✗' : '…'}
+                                                    <Tag color={toolDisplayStatus(tc, true).color}>
+                                                        {toolDisplayStatus(tc, true).label}
                                                     </Tag>
                                                     {typeof tc.durationMs === 'number' && (
                                                         <Text style={{fontSize: 10, color: 'var(--text-muted)'}}>{tc.durationMs} ms</Text>
@@ -863,10 +944,31 @@ export default function Chat({
                         </div>
                     )}
                 </Space>
+                <Tooltip title="导出当前对话（不含工具参数和图片文件）">
+                    <Button
+                        type="text"
+                        icon={<DownloadOutlined/>}
+                        disabled={messages.length === 0}
+                        onClick={handleExport}
+                        aria-label="导出当前对话"
+                    >
+                        导出
+                    </Button>
+                </Tooltip>
             </div>
 
             {/* 消息区 */}
-            <div ref={messagesContainerRef} className="chat-messages" style={{flex: 1, minHeight: 0, overflow: 'auto', padding: '20px 24px'}}>
+            <div
+                ref={messagesContainerRef}
+                className="chat-messages"
+                style={{flex: 1, minHeight: 0, overflow: 'auto', padding: '20px 24px', position: 'relative'}}
+                onScroll={event => {
+                    const target = event.currentTarget;
+                    const nearBottom = isNearChatBottom(target.scrollTop, target.scrollHeight, target.clientHeight);
+                    shouldFollowStreamRef.current = nearBottom;
+                    setShowJumpToBottom(!nearBottom);
+                }}
+            >
                 {messages.length === 0 && !isLoading && (
                     <div style={{
                         textAlign: 'center', padding: '60px 20px',
@@ -885,30 +987,23 @@ export default function Chat({
                         <Text style={{color: 'var(--text-muted)', fontSize: 14, display: 'block', marginBottom: 28}}>
                             米家自动化极客版 AI 助手
                         </Text>
-                        <Space direction="vertical" size={10}>
-                            <Button
-                                className="chat-suggestion-button"
-                                onClick={() => sendMessage('帮我查看设备状态')}
-                                style={{
-                                    borderRadius: 'var(--radius-full)',
-                                    padding: '6px 20px',
-                                    height: 'auto',
-                                }}
-                            >
-                                查看设备状态
-                            </Button>
-                            <Button
-                                className="chat-suggestion-button"
-                                onClick={() => sendMessage('帮我创建自动化规则')}
-                                style={{
-                                    borderRadius: 'var(--radius-full)',
-                                    padding: '6px 20px',
-                                    height: 'auto',
-                                }}
-                            >
-                                创建自动化规则
-                            </Button>
-                        </Space>
+                        <Prompts
+                            className="chat-prompts"
+                            vertical
+                            items={[
+                                {key: 'devices', icon: <SearchOutlined/>, label: '查看设备状态', description: '查询当前设备和在线情况'},
+                                {key: 'automation', icon: <BulbOutlined/>, label: '设计自动化规则', description: '先生成方案，确认后再写入'},
+                                {key: 'usage', icon: <SafetyCertificateOutlined/>, label: '检查设备规则引用', description: '评估更换或删除设备的影响'},
+                            ]}
+                            onItemClick={({data}) => {
+                                const prompts: Record<string, string> = {
+                                    devices: '帮我查看设备状态',
+                                    automation: '帮我设计一个自动化规则，先给出方案，不要立即写入',
+                                    usage: '帮我检查设备被哪些自动化规则引用',
+                                };
+                                sendMessage(prompts[data.key]);
+                            }}
+                        />
                     </div>
                 )}
 
@@ -931,15 +1026,15 @@ export default function Chat({
                                     <div className="chat-message-content" style={{whiteSpace: 'pre-wrap', lineHeight: 1.6}}>{msg.content}</div>
                                     {renderCopyButton(msg.content, msg.id)}
                                 </div>
-                                {currentSessionId && onResetSession && !isLoading && msg.seq !== undefined && (
+                                {currentSessionId && onForkSession && !isLoading && msg.seq !== undefined && (
                                     <div style={{textAlign: 'right', marginTop: 4}}>
                                         <Button
                                             type="text" size="small"
                                             icon={<RollbackOutlined/>}
-                                            onClick={() => handleReset(msg.seq!, msg.content, msg.images)}
+                                            onClick={() => void handleEditDraft(msg.seq!, msg.content, msg.images)}
                                             style={{fontSize: 11, color: 'var(--text-muted)', padding: '0 6px'}}
                                         >
-                                            重做
+                                            编辑并重发
                                         </Button>
                                     </div>
                                 )}
@@ -993,6 +1088,16 @@ export default function Chat({
                         </Text>
                     </div>
                 )}
+                {showJumpToBottom && (
+                    <Button
+                        className="chat-jump-bottom"
+                        shape="round"
+                        icon={<ArrowDownOutlined/>}
+                        onClick={() => scrollToBottom()}
+                    >
+                        回到底部
+                    </Button>
+                )}
             </div>
 
             {/* 输入区 */}
@@ -1022,79 +1127,63 @@ export default function Chat({
                         ))}
                     </div>
                 )}
-                <form onSubmit={handleSubmit}>
-                    <Space.Compact style={{width: '100%'}}>
-                        <input
-                            ref={fileInputRef}
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp,image/gif"
-                            multiple
-                            hidden
-                            onChange={event => {
-                                addImageFiles(Array.from(event.target.files || []));
-                                event.target.value = '';
-                            }}
-                        />
+                {!isLoading && (
+                    <Prompts
+                        className="chat-input-prompts"
+                        items={quickPromptItems}
+                        wrap
+                        onItemClick={({data}) => sendMessage(quickPromptText[data.key] || '')}
+                    />
+                )}
+                <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                    hidden
+                    onChange={event => {
+                        addImageFiles(Array.from(event.target.files || []));
+                        event.target.value = '';
+                    }}
+                />
+                <Sender
+                    rootClassName="chat-sender"
+                    value={input}
+                    onChange={setInput}
+                    onSubmit={handleSubmit}
+                    onCancel={handleStop}
+                    loading={isLoading}
+                    readOnly={isLoading}
+                    submitType="enter"
+                    autoSize={{minRows: 1, maxRows: 5}}
+                    actions={(_, {components: {SendButton, LoadingButton}}) => isLoading
+                        ? <LoadingButton/>
+                        : <SendButton disabled={!input.trim() && pendingImages.length === 0}/>
+                    }
+                    placeholder={waitingInput ? '选择上方选项，或输入自定义回复...' : '输入消息，Enter 发送，Shift+Enter 换行'}
+                    onPaste={event => {
+                        const files = Array.from(event.clipboardData.files);
+                        if (files.some(file => file.type.startsWith('image/'))) {
+                            event.preventDefault();
+                            addImageFiles(files);
+                        }
+                    }}
+                    prefix={(
                         <Tooltip title="上传自动化截图（也可粘贴或拖入）">
                             <Button
+                                type="text"
                                 className="chat-image-button"
                                 icon={<PictureOutlined/>}
                                 disabled={isLoading}
                                 aria-label="上传图片"
                                 onClick={() => fileInputRef.current?.click()}
-                                style={{height: 40, borderRadius: 'var(--radius-lg) 0 0 var(--radius-lg)'}}
                             />
                         </Tooltip>
-                        <TextArea
-                            className="chat-input"
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            onPaste={event => {
-                                const files = Array.from(event.clipboardData.files);
-                                if (files.some(file => file.type.startsWith('image/'))) {
-                                    event.preventDefault();
-                                    addImageFiles(files);
-                                }
-                            }}
-                            placeholder={waitingInput ? "选择上方选项，或输入自定义回复..." : "输入消息，或上传自动化截图..."}
-                            autoSize={{minRows: 1, maxRows: 4}}
-                            disabled={isLoading && !waitingInput}
-                            style={{
-                                borderRadius: 0,
-                                color: 'var(--text-primary)',
-                                resize: 'none',
-                            }}
-                        />
-                        {isLoading ? (
-                            <Button
-                                className="chat-stop-button"
-                                danger
-                                icon={<StopOutlined/>}
-                                onClick={handleStop}
-                                style={{
-                                    borderRadius: '0 var(--radius-lg) var(--radius-lg) 0',
-                                    height: 40,
-                                }}
-                            >
-                                停止
-                            </Button>
-                        ) : (
-                            <Button
-                                className="chat-send-button"
-                                type="primary"
-                                icon={<SendOutlined/>}
-                                htmlType="submit"
-                                disabled={!input.trim() && pendingImages.length === 0}
-                                aria-label="发送消息"
-                                style={{
-                                    borderRadius: '0 var(--radius-lg) var(--radius-lg) 0',
-                                    height: 40,
-                                }}
-                            />
-                        )}
-                    </Space.Compact>
-                </form>
+                    )}
+                />
+                <Text className="chat-safety-hint">
+                    涉及创建、更新、启停或删除规则时，发送前请核对目标；失败后不要盲目重试。
+                </Text>
             </div>
         </div>
     );
